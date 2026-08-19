@@ -1,0 +1,4628 @@
+import {
+  parseKeymap,
+  applyCombos,
+  applyBehaviors,
+  applyMacros,
+  bindingLabel,
+  bindingHoldHint,
+  formatKeyLabel,
+  protectionFor,
+  findLayerActivators,
+  comboTitle,
+  comboActiveOnLayer,
+  layersUsingId,
+  applyLayers,
+  displayLayerName,
+  nextLayerId,
+  emptyLayerBindings,
+  layerToken,
+  rewriteLayerToken,
+  applyLayerIndexMap,
+  indexMapAfterDelete,
+  indexMapAfterInsert,
+  indexMapAfterReorder,
+  countLayerTokenUses,
+  neutralizeLayerToken,
+  extractMacroTapTokens,
+  findMacroKeySeats,
+  prettyMacroToken,
+  setLabelOs,
+  mapStudioLayerIndex,
+  studioLayerId,
+} from "../keymap/keymap.js";
+import { applyTheme } from "./theme.js";
+import { PROFILE_INDEX, loadProfile, layoutBounds, normalizeProfile, profileFromDtsi } from "../layouts/layout.js";
+import { pickDiscovery } from "../layouts/discover.js";
+import { listGithubFiles, githubRawFile, parseGithubInput } from "../connection/github.js";
+import { listLocalFiles, readLocalFile } from "../connection/local.js";
+import { CATEGORIES, PALETTE, EMPTY_BINDING } from "./palette.js";
+import { cloneBinding, planDrop, dropLabel, clickKeyAction } from "../core/drag.js";
+import {
+  loadSettings,
+  saveSettings,
+  holdModChoices,
+  inspectModChoices,
+  modifiersForOs,
+} from "../core/settings.js";
+import {
+  classifyCombination,
+  combinationSummary,
+  defaultModeForBinding,
+  describeHoldConflict,
+  holdChoiceFromBinding,
+  macroStepsFromKeys,
+  modifierFromBinding,
+  outputKeysFromSteps,
+  resolveHoldMod,
+  suggestedName,
+  tapTokenFromBinding,
+  uniqueSlug,
+  appendOutputKey,
+  asBinding,
+  isBrokenComboBinding,
+  formatBuilderDefinition,
+} from "../core/combine.js";
+import {
+  History,
+  BindingSetCommand,
+  CreateLayerCommand,
+  DuplicateLayerCommand,
+  RenameLayerCommand,
+  DeleteLayerCommand,
+  ReorderLayerCommand,
+} from "../core/history.js";
+import { buildKeymapSvg } from "./svg.js";
+import { connectStudio } from "../connection/studio.js";
+import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
+import {
+  parseBinding,
+  formatBinding,
+  convertBinding,
+  classifyBinding,
+  isHomeRowBehavior,
+  isHomeRowBinding,
+  isLayerHoldBinding,
+  keycodeFromBinding,
+  BT_COMMANDS,
+  MOUSE_PARAMS,
+} from "../behaviors/inspect.js";
+
+applyTheme();
+
+const DRAG_CLEAR_PX = 16;
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  original: "",
+  profile: null,
+  keymapPath: "keymap.keymap",
+  layers: [],
+  combos: [],
+  comboInsertAt: -1,
+  behaviors: [],
+  behaviorInsertAt: -1,
+  macros: [],
+  macroInsertAt: -1,
+  keys: [],
+  layer: 0,
+  layerMenu: null,
+  layerRename: null,
+  selected: new Set(),
+  dirty: false,
+  sync: "saved",
+  drag: null,
+  bgClick: null,
+  history: new History(50),
+  emptyBinding: EMPTY_BINDING,
+  settings: loadSettings(),
+  source: "file",
+  sourceLabel: "",
+  githubRef: null,
+  importedProfile: null,
+  repoDiscover: null,
+  category: CATEGORIES[0].id,
+  studio: null,
+  liveWarned: false,
+  comboDraft: null,
+  behaviorDraft: null,
+  macroDraft: null,
+  combinationDraft: null,
+  combinationFilter: "all",
+  deviceLayerCount: 0,
+  flashNotice: null,
+};
+
+const liveQueue = [];
+let liveBusy = false;
+
+function setStatus(msg) {
+  $("status").textContent = msg;
+}
+
+function fileDiffCount() {
+  let n = 0;
+  for (const layer of state.layers) {
+    for (const b of layer.bindings || []) {
+      if (b.start == null || b.end == null || b.text !== state.original.slice(b.start, b.end)) n++;
+    }
+  }
+  return n;
+}
+
+function sourceStatusText() {
+  const extra = extraEditorLayers();
+  const extraNote = extra.length ? ` · ${extra.join(", ")} not on board` : "";
+  if (state.source === "keyboard") {
+    return `Showing: Keyboard${extraNote}`;
+  }
+  if (state.source === "github") {
+    return `Showing: GitHub · ${state.sourceLabel || "repository"}`;
+  }
+  return `Showing: File · ${state.sourceLabel || state.keymapPath || "keymap"}`;
+}
+
+function updateChrome() {
+  const bar = $("source-status");
+  const barText = $("source-status-text");
+  if (bar) bar.dataset.source = state.source || "file";
+  if (barText) barText.textContent = sourceStatusText();
+  const apply = $("studio-apply");
+  if (apply) apply.disabled = !state.studio;
+}
+
+function setSync(next) {
+  state.sync = next;
+  const el = $("sync-state");
+  if (el) {
+    const text =
+      next === "unsaved-and-live"
+        ? "Unsaved changes on keyboard."
+        : next === "unsaved"
+          ? "Unsaved changes in editor"
+          : "All changes saved";
+    el.textContent = text;
+    el.dataset.sync = next === "unsaved-and-live" ? "unsaved-and-live" : next;
+  }
+  updateChrome();
+}
+
+function setDirty(d) {
+  state.dirty = d;
+  if (d) setSync("unsaved");
+  else setSync("saved");
+  updateStudioButtons();
+}
+
+function setStudioLabel(text, kind = "") {
+  const el = $("studio-state");
+  el.textContent = text;
+  el.className = `studio-state ${kind}`.trim();
+}
+
+function updateStudioButtons() {
+  const on = !!state.studio;
+  $("studio-connect").textContent = on ? "Disconnect" : "Connect";
+  $("studio-apply").disabled = !on;
+}
+
+function updateHistoryButtons() {
+  const undo = $("undo");
+  const redo = $("redo");
+  if (!undo || !redo) return;
+  const u = state.history.peekUndo();
+  const r = state.history.peekRedo();
+  undo.disabled = !u;
+  redo.disabled = !r;
+  undo.title = u ? `Undo ${u.description}` : "Undo";
+  redo.title = r ? `Redo ${r.description}` : "Redo";
+}
+
+function currentBindings() {
+  return state.layers[state.layer]?.bindings ?? [];
+}
+
+function currentProtection(index) {
+  return protectionFor(index, state.layer, state.combos);
+}
+
+function currentActivators() {
+  return findLayerActivators(state.layers, state.layer);
+}
+
+function confirmProtected(index, action) {
+  const why = currentProtection(index);
+  if (!why) return true;
+  return window.confirm(`Position ${index} is a combo / recovery key (${why}).\n${action} anyway?`);
+}
+
+function selectOnly(index) {
+  state.selected.clear();
+  if (index != null) state.selected.add(index);
+  renderKeyboard();
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+  renderInspect();
+}
+
+function selectLayer(i) {
+  if (i < 0 || i >= state.layers.length) return;
+  state.layer = i;
+  state.layerMenu = null;
+  updateLayerOfflineBanner();
+  renderLayers();
+  if (state.behaviorDraft) updateBehaviorView();
+  renderKeyboard();
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+  renderInspect();
+}
+
+function afterLayerChange() {
+  setDirty(true);
+  renderLayers();
+  renderPalette();
+  renderKeyboard();
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+  renderInspect();
+}
+
+const layerHost = {
+  insertLayer(at, layer) {
+    applyLayerIndexMap(state.layers, state.combos, indexMapAfterInsert(state.layers.length, at));
+    state.layers.splice(at, 0, layer);
+    state.layer = at;
+  },
+  removeLayerAt(at) {
+    applyLayerIndexMap(state.layers, state.combos, indexMapAfterDelete(state.layers.length, at));
+    state.layers.splice(at, 1);
+    if (state.layer >= state.layers.length) state.layer = state.layers.length - 1;
+    else if (state.layer > at) state.layer -= 1;
+  },
+  reorderLayer(from, to) {
+    applyLayerIndexMap(state.layers, state.combos, indexMapAfterReorder(from, to, state.layers.length));
+    const [item] = state.layers.splice(from, 1);
+    state.layers.splice(to, 0, item);
+    state.layer = to;
+  },
+  renameLayerId(index, fromId, toId) {
+    const fromTok = layerToken(fromId);
+    const toTok = layerToken(toId);
+    for (const l of state.layers) {
+      for (const b of l.bindings) b.text = rewriteLayerToken(b.text, fromTok, toTok);
+    }
+    if (state.layers[index]) state.layers[index].id = toId;
+  },
+  neutralizeToken(token) {
+    neutralizeLayerToken(state.layers, token);
+  },
+  restoreBindings(changes) {
+    for (const c of changes || []) {
+      const b = state.layers[c.layer]?.bindings[c.index];
+      if (b) b.text = c.before;
+    }
+  },
+  restoreCombos(rows) {
+    for (const row of rows || []) {
+      const live = state.combos.find((c) => c.id === row.id);
+      if (!live) continue;
+      live.layers = Array.isArray(row.layers) ? [...row.layers] : row.layers;
+      live.edited = row.edited;
+      live.deleted = row.deleted;
+    }
+  },
+};
+
+function runHistory(cmd, after) {
+  state.history.execute(cmd);
+  updateHistoryButtons();
+  if (after) after();
+  return cmd;
+}
+
+function createLayer(after = state.layers.length - 1) {
+  const id = nextLayerId(state.layers);
+  const at = Math.min(after + 1, state.layers.length);
+  runHistory(
+    new CreateLayerCommand(layerHost, {
+      at,
+      id,
+      bindings: emptyLayerBindings(keyCount()),
+      description: `Add ${displayLayerName(id)}`,
+    }),
+    () => {
+      state.layerRename = at;
+      afterLayerChange();
+      showFlashNeeded("layer", displayLayerName(id));
+    }
+  );
+}
+
+function duplicateLayer(index) {
+  const src = state.layers[index];
+  if (!src) return;
+  const id = nextLayerId(state.layers);
+  const at = index + 1;
+  runHistory(
+    new DuplicateLayerCommand(layerHost, {
+      from: index,
+      at,
+      id,
+      texts: src.bindings.map((b) => b.text),
+      description: `Duplicate ${displayLayerName(src.id)}`,
+    }),
+    () => {
+      state.layerRename = at;
+      afterLayerChange();
+      showFlashNeeded("layer", displayLayerName(id));
+    }
+  );
+}
+
+function renameLayer(index, raw) {
+  const layer = state.layers[index];
+  if (!layer) return;
+  let slug = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_|_$/g, "");
+  if (!slug) {
+    setStatus("Layer needs a name.");
+    return;
+  }
+  if (!/^[a-z]/.test(slug)) slug = `layer_${slug}`;
+  const id = slug.endsWith("_layer") || /^layer_\d+$/.test(slug) ? slug : `${slug}_layer`;
+  if (state.layers.some((l, i) => i !== index && l.id === id)) {
+    setStatus(`${id} already exists.`);
+    return;
+  }
+  if (id === layer.id) {
+    state.layerRename = null;
+    renderLayers();
+    return;
+  }
+  const fromId = layer.id;
+  runHistory(
+    new RenameLayerCommand(layerHost, {
+      index,
+      fromId,
+      toId: id,
+      description: `Rename ${displayLayerName(fromId)}`,
+    }),
+    () => {
+      state.layerRename = null;
+      afterLayerChange();
+      setStatus(`Renamed to ${displayLayerName(id)}.`);
+    }
+  );
+}
+
+function deleteLayer(index) {
+  if (state.layers.length <= 1) {
+    setStatus("Need at least one layer.");
+    return;
+  }
+  const layer = state.layers[index];
+  const name = displayLayerName(layer.id);
+  const token = layerToken(layer.id);
+  const uses = countLayerTokenUses(
+    state.layers.filter((_, i) => i !== index),
+    token
+  );
+  const extra = uses ? `\n${uses} key(s) point at this layer and will become &trans.` : "";
+  if (!window.confirm(`Delete layer ${name} (${index})?${extra}`)) return;
+  const neutralized = [];
+  state.layers.forEach((l, li) => {
+    l.bindings.forEach((b, ki) => {
+      const parts = String(b.text || "").trim().split(/\s+/);
+      if (li === index) return;
+      if ((parts[0] === "&lt" || parts[0] === "&mo" || parts[0] === "&to" || parts[0] === "&tog") && parts[1] === token) {
+        neutralized.push({ layer: li, index: ki, before: b.text });
+      }
+    });
+  });
+  const saved = {
+    token,
+    layer: {
+      id: layer.id,
+      added: !!layer.added,
+      start: layer.start,
+      end: layer.end,
+      bindings: layer.bindings.map((b) => ({ ...b })),
+    },
+  };
+  const combos = state.combos.map((c) => ({
+    id: c.id,
+    layers: Array.isArray(c.layers) ? [...c.layers] : c.layers,
+    edited: c.edited,
+    deleted: c.deleted,
+  }));
+  runHistory(
+    new DeleteLayerCommand(layerHost, {
+      index,
+      saved,
+      neutralized,
+      combos,
+      description: `Delete ${name}`,
+    }),
+    () => {
+      afterLayerChange();
+      showFlashNeeded("layer-delete", name);
+    }
+  );
+}
+
+function reorderLayer(from, to) {
+  if (from === to || from < 0 || to < 0 || from >= state.layers.length || to >= state.layers.length) return;
+  const name = displayLayerName(state.layers[from].id);
+  runHistory(
+    new ReorderLayerCommand(layerHost, { from, to, description: `Reorder ${name}` }),
+    () => {
+      afterLayerChange();
+      setStatus(`Moved ${name} to index ${to}.`);
+    }
+  );
+}
+
+function renderLayers() {
+  updateLayerOfflineBanner();
+  const wrap = $("layers");
+  wrap.replaceChildren();
+  state.layers.forEach((layer, i) => {
+    const tab = document.createElement("div");
+    tab.className = `layer-tab${i === state.layer ? " active" : ""}`;
+    tab.dataset.index = String(i);
+    if (state.layerRename === i) {
+      const inp = document.createElement("input");
+      inp.className = "layer-rename";
+      inp.value = displayLayerName(layer.id);
+      inp.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          renameLayer(i, inp.value);
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          state.layerRename = null;
+          renderLayers();
+        }
+      });
+      inp.addEventListener("blur", () => {
+        if (state.layerRename === i) renameLayer(i, inp.value);
+      });
+      tab.appendChild(inp);
+      wrap.appendChild(tab);
+      queueMicrotask(() => {
+        inp.focus();
+        inp.select();
+      });
+      return;
+    }
+    const name = document.createElement("span");
+    name.className = "layer-name";
+    name.textContent = displayLayerName(layer.id);
+    const idx = document.createElement("span");
+    idx.className = "layer-idx";
+    idx.textContent = String(i);
+    tab.append(name, idx);
+    if (state.studio && !layerOnDevice(i)) {
+      const off = document.createElement("span");
+      off.className = "layer-off-board";
+      off.title = "Not in this firmware. Download the keymap and flash to add it.";
+      off.textContent = "not on board";
+      tab.appendChild(off);
+    }
+    if (i === state.layer) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "layer-more";
+      more.textContent = "⋯";
+      more.setAttribute("aria-label", "Layer menu");
+      more.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        state.layerMenu = state.layerMenu === i ? null : i;
+        renderLayers();
+      });
+      tab.appendChild(more);
+    }
+    tab.addEventListener("dblclick", (ev) => {
+      ev.preventDefault();
+      state.layerRename = i;
+      renderLayers();
+    });
+    tab.addEventListener("pointerdown", (ev) => startLayerDrag(ev, i));
+    wrap.appendChild(tab);
+    if (state.layerMenu === i) {
+      const menu = document.createElement("div");
+      menu.className = "layer-menu";
+      menu.addEventListener("click", (ev) => ev.stopPropagation());
+      const mk = (label, fn) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = label;
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          state.layerMenu = null;
+          fn();
+        });
+        return b;
+      };
+      menu.append(
+        mk("Rename", () => {
+          state.layerRename = i;
+          renderLayers();
+        }),
+        mk("Duplicate", () => duplicateLayer(i)),
+        mk("Delete", () => deleteLayer(i))
+      );
+      tab.appendChild(menu);
+    }
+  });
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "layer-add";
+  add.textContent = "+";
+  add.title = "New layer (⌘⇧N)";
+  add.addEventListener("click", () => createLayer(state.layers.length - 1));
+  wrap.appendChild(add);
+}
+
+function startLayerDrag(ev, index) {
+  if (ev.target.closest(".layer-more, .layer-menu, .layer-rename")) return;
+  if (ev.button != null && ev.button !== 0) return;
+  ev.preventDefault();
+  const startX = ev.clientX;
+  const startY = ev.clientY;
+  let dragging = false;
+  const onMove = (e) => {
+    if (!dragging && Math.hypot(e.clientX - startX, e.clientY - startY) < 6) return;
+    dragging = true;
+    document.querySelectorAll(".layer-tab").forEach((el) => {
+      const i = Number(el.dataset.index);
+      el.classList.toggle("dragging", i === index);
+    });
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".layer-tab");
+    document.querySelectorAll(".layer-tab").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    if (over && over.dataset.index != null && Number(over.dataset.index) !== index) {
+      const rect = over.getBoundingClientRect();
+      over.classList.add(e.clientX < rect.left + rect.width / 2 ? "drop-before" : "drop-after");
+    }
+  };
+  const onUp = (e) => {
+    window.removeEventListener("pointermove", onMove);
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".layer-tab");
+    document.querySelectorAll(".layer-tab").forEach((el) => el.classList.remove("dragging", "drop-before", "drop-after"));
+    if (dragging && over?.dataset.index != null) {
+      let to = Number(over.dataset.index);
+      const rect = over.getBoundingClientRect();
+      if (e.clientX >= rect.left + rect.width / 2 && to < index) to += 1;
+      if (e.clientX < rect.left + rect.width / 2 && to > index) to -= 1;
+      if (to !== index) reorderLayer(index, to);
+      else selectLayer(index);
+    } else if (!dragging) {
+      selectLayer(index);
+    }
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+}
+
+function inspectContext() {
+  return {
+    macros: state.macros,
+    behaviors: state.behaviors,
+    defaultLayer: layerNameOf(state.layer),
+    homeRowBehaviors: state.profile?.homeRowBehaviors || [],
+  };
+}
+
+function keyCount() {
+  return state.profile?.keyCount || state.keys.length || 0;
+}
+
+function layerNameOf(index) {
+  return (state.layers[index]?.id || "").replace(/_layer$/, "").toUpperCase() || "BASE";
+}
+
+function inspectBehaviorChoices() {
+  const groups = [
+    [
+      "Key",
+      [
+        ["kp", "Key press"],
+        ["sk", "Sticky key"],
+        ["trans", "Transparent"],
+        ["none", "None"],
+      ],
+    ],
+    [
+      "Layer",
+      [
+        ["lt", "Layer-tap"],
+        ["mo", "Momentary"],
+        ["to", "To layer"],
+        ["tog", "Toggle layer"],
+      ],
+    ],
+    [
+      "Hold-tap",
+      state.behaviors.filter((b) => !b.deleted && b.kind === "hold-tap").map((b) => [b.id, `&${b.id}`]),
+    ],
+    ["Macros", state.macros.filter((m) => !m.deleted).map((m) => [m.id, `&${m.id}`])],
+    [
+      "Mouse",
+      [
+        ["mmv", "Mouse move"],
+        ["msc", "Scroll"],
+        ["mkp", "Click"],
+      ],
+    ],
+    [
+      "System",
+      [
+        ["bt", "Bluetooth"],
+        ["sys_reset", "Soft reset"],
+        ...state.behaviors
+          .filter((b) => !b.deleted && b.kind !== "hold-tap")
+          .map((b) => [b.id, `&${b.id}`]),
+      ],
+    ],
+  ];
+  return groups.filter(([, items]) => items.length);
+}
+
+function fillSelect(sel, items, value) {
+  sel.replaceChildren();
+  for (const [id, label] of items) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = label;
+    if (id === value) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (value && !items.some(([id]) => id === value)) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = `&${value}`;
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function keycodeList() {
+  const seen = new Set();
+  const out = [];
+  for (const item of PALETTE) {
+    const code = keycodeFromBinding(item.binding);
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+function renderLegend() {
+  const el = $("color-legend");
+  if (!el) return;
+  el.classList.toggle("compact", state.selected.size > 0);
+}
+
+function renderInspect(force = false) {
+  renderLegend();
+  const el = $("inspect");
+  if (!el) return;
+  const activators = currentActivators();
+  const holdNote = activators
+    .map((a) => `Hold P${a.index} (${a.text}) to open this layer.`)
+    .join(" ");
+
+  if (state.selected.size === 0) {
+    el.dataset.view = "";
+    el.innerHTML = `
+      <div class="inspect-empty">Click a key to edit it. Click it again or click empty space to deselect. Drag to <strong>move</strong>, Alt-drag to <strong>swap</strong>, ⌘/Ctrl-drag to <strong>copy</strong>. Drag off the board to clear.${state.studio ? " Connected: supported edits go to the board immediately." : ""}</div>
+      ${holdNote ? `<div>${holdNote}</div>` : ""}
+    `;
+    return;
+  }
+
+  const idx = [...state.selected][0];
+  const text = currentBindings()[idx]?.text ?? "&trans";
+  const model = parseBinding(text);
+  const view = `${state.layer}:${[...state.selected].join(",")}:${model.behavior}`;
+  if (!force && el.dataset.view === view && el.contains(document.activeElement)) {
+    const raw = $("inspect-raw");
+    if (raw) raw.textContent = text;
+    const pretty = $("inspect-pretty");
+    if (pretty) pretty.textContent = bindingLabel(text);
+    return;
+  }
+  el.dataset.view = view;
+
+  const kind = classifyBinding(model, inspectContext());
+  const prot = currentProtection(idx);
+  const act = activators.find((a) => a.index === idx);
+  const layerLabel = (state.layers[state.layer]?.id || "").replace(/_layer$/, "");
+  const combosHere = state.combos.filter(
+    (c) => !c.deleted && c.positions.includes(idx) && comboActiveOnLayer(c, state.layer)
+  );
+
+  el.replaceChildren();
+  const form = document.createElement("form");
+  form.id = "inspect-form";
+  form.addEventListener("submit", (ev) => ev.preventDefault());
+
+  const head = document.createElement("div");
+  head.className = "inspect-head";
+  const left = document.createElement("div");
+  left.innerHTML = `<span class="inspect-pos">P${idx}</span><span class="inspect-layer">${layerLabel}</span><span class="inspect-pretty" id="inspect-pretty">${bindingLabel(text)}</span>${state.selected.size > 1 ? ` <span class="inspect-layer">+${state.selected.size - 1}</span>` : ""}`;
+  const raw = document.createElement("code");
+  raw.id = "inspect-raw";
+  raw.className = "inspect-raw";
+  raw.textContent = text;
+  head.append(left, raw);
+  form.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "inspect-fields";
+
+  const behField = document.createElement("label");
+  behField.className = "field field-wide";
+  behField.innerHTML = "<span>Behavior</span>";
+  const beh = document.createElement("select");
+  beh.id = "inspect-behavior";
+  for (const [group, items] of inspectBehaviorChoices()) {
+    const og = document.createElement("optgroup");
+    og.label = group;
+    for (const [id, label] of items) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = label;
+      if (id === model.behavior) opt.selected = true;
+      og.appendChild(opt);
+    }
+    beh.appendChild(og);
+  }
+  if (![...beh.options].some((o) => o.value === model.behavior)) {
+    const opt = document.createElement("option");
+    opt.value = model.behavior;
+    opt.textContent = `&${model.behavior}`;
+    opt.selected = true;
+    beh.appendChild(opt);
+  }
+  beh.addEventListener("change", onInspectBehaviorChange);
+  behField.appendChild(beh);
+  row.appendChild(behField);
+
+  const showLayer = kind === "layer" || kind === "layer-tap";
+  const showHold = kind === "hold-tap";
+  const showBt = kind === "bt";
+  const showMouse = kind === "mouse";
+  const showKey = kind === "keypress" || kind === "layer-tap" || kind === "hold-tap" || kind === "sticky";
+  const showMods = showKey;
+
+  if (showLayer) {
+    const f = document.createElement("label");
+    f.className = "field";
+    f.innerHTML = "<span>Layer</span>";
+    const sel = document.createElement("select");
+    sel.id = "inspect-layer";
+    fillSelect(
+      sel,
+      state.layers.map((l, i) => [layerNameOf(i), (l.id || "").replace(/_layer$/, "")]),
+      model.layer
+    );
+    sel.addEventListener("change", commitInspect);
+    f.appendChild(sel);
+    row.appendChild(f);
+  }
+
+  if (showHold) {
+    const f = document.createElement("label");
+    f.className = "field";
+    f.innerHTML = "<span>Hold</span>";
+    const sel = document.createElement("select");
+    sel.id = "inspect-hold";
+    fillSelect(sel, holdMods(), model.hold);
+    sel.addEventListener("change", commitInspect);
+    f.appendChild(sel);
+    row.appendChild(f);
+  }
+
+  if (showBt) {
+    const f = document.createElement("label");
+    f.className = "field";
+    f.innerHTML = "<span>Command</span>";
+    const sel = document.createElement("select");
+    sel.id = "inspect-bt-cmd";
+    fillSelect(
+      sel,
+      BT_COMMANDS.map((c) => [c, c]),
+      model.btCmd
+    );
+    sel.addEventListener("change", () => {
+      commitInspect();
+      renderInspect(true);
+    });
+    f.appendChild(sel);
+    row.appendChild(f);
+    if (model.btCmd === "BT_SEL" || model.btCmd === "BT_DISC") {
+      const p = document.createElement("label");
+      p.className = "field";
+      p.innerHTML = "<span>Profile</span>";
+      const num = document.createElement("input");
+      num.id = "inspect-bt-profile";
+      num.type = "number";
+      num.min = "0";
+      num.max = "4";
+      num.value = model.btProfile || "0";
+      num.addEventListener("input", commitInspect);
+      p.appendChild(num);
+      row.appendChild(p);
+    }
+  }
+
+  if (showMouse) {
+    const f = document.createElement("label");
+    f.className = "field";
+    f.innerHTML = "<span>Param</span>";
+    const sel = document.createElement("select");
+    sel.id = "inspect-key";
+    const allowed = (MOUSE_PARAMS[model.behavior] || []).map((c) => [c, c]);
+    fillSelect(sel, allowed, model.key);
+    sel.addEventListener("change", commitInspect);
+    f.appendChild(sel);
+    row.appendChild(f);
+  } else if (showKey) {
+    const f = document.createElement("label");
+    f.className = "field";
+    f.innerHTML = `<span>${kind === "layer-tap" || kind === "hold-tap" ? "Tap" : "Key"}</span>`;
+    if (kind === "sticky") {
+      const sel = document.createElement("select");
+      sel.id = "inspect-key";
+      fillSelect(sel, holdMods(), model.key);
+      sel.addEventListener("change", commitInspect);
+      f.appendChild(sel);
+    } else {
+      const inp = document.createElement("input");
+      inp.id = "inspect-key";
+      inp.type = "text";
+      inp.setAttribute("list", "inspect-codes");
+      inp.autocomplete = "off";
+      inp.spellcheck = false;
+      inp.dataset.inspect = "key";
+      inp.value = model.key;
+      inp.placeholder = "Q";
+      inp.addEventListener("input", commitInspect);
+      const list = document.createElement("datalist");
+      list.id = "inspect-codes";
+      for (const code of keycodeList()) {
+        const opt = document.createElement("option");
+        opt.value = code;
+        list.appendChild(opt);
+      }
+      f.append(inp, list);
+    }
+    row.appendChild(f);
+  }
+
+  if (kind === "raw") {
+    const f = document.createElement("label");
+    f.className = "field field-wide";
+    f.innerHTML = "<span>Binding</span>";
+    const inp = document.createElement("input");
+    inp.id = "inspect-raw-edit";
+    inp.type = "text";
+    inp.value = text;
+    inp.addEventListener("change", () => {
+      for (const i of state.selected) assignBinding(i, inp.value.trim(), { quiet: true, skipInspect: true });
+      renderInspect(true);
+    });
+    f.appendChild(inp);
+    row.appendChild(f);
+  }
+
+  form.appendChild(row);
+
+  if (showMods) {
+    const mods = document.createElement("div");
+    mods.id = "inspect-mods";
+    mods.className = "inspect-mods";
+    for (const [id, label] of inspectMods()) {
+      const lab = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = id;
+      box.checked = model.mods.includes(id);
+      box.addEventListener("change", commitInspect);
+      lab.append(box, document.createTextNode(` ${label}`));
+      mods.appendChild(lab);
+    }
+    form.appendChild(mods);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+  const macro = state.macros.find((m) => !m.deleted && m.id === model.behavior);
+  const behavior = state.behaviors.find((b) => !b.deleted && b.id === model.behavior);
+  if (macro) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `Edit &${macro.id}`;
+    btn.addEventListener("click", () => openMacroEditor(macro));
+    actions.appendChild(btn);
+  }
+  if (behavior) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `Edit &${behavior.id}`;
+    btn.addEventListener("click", () => openBehaviorEditor(behavior));
+    actions.appendChild(btn);
+  }
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "Clear";
+  clear.addEventListener("click", () => {
+    applyBindingSets(
+      [...state.selected].map((i) => ({ index: i, text: emptyBinding() })),
+      "Clear"
+    );
+  });
+  actions.appendChild(clear);
+  form.appendChild(actions);
+
+  if (kind === "layer-tap" && model.layer) {
+    const note = document.createElement("div");
+    note.className = "field-hint";
+    note.textContent = `Hold opens ${model.layer}; tap sends ${model.key || "—"}.`;
+    form.appendChild(note);
+  } else if (kind === "layer" && model.layer) {
+    const note = document.createElement("div");
+    note.className = "field-hint";
+    const verb = model.behavior === "mo" ? "Hold for" : model.behavior === "to" ? "Switch to" : "Toggle";
+    note.textContent = `${verb} ${model.layer}.`;
+    form.appendChild(note);
+  } else if (act) {
+    const note = document.createElement("div");
+    note.className = "field-hint";
+    note.textContent = `On another layer this position is ${act.text}, which opens ${layerLabel}.`;
+    form.appendChild(note);
+  }
+  if (combosHere.length) {
+    const note = document.createElement("div");
+    note.className = "field-hint";
+    note.textContent = `Combos: ${combosHere.map((c) => `${comboTitle(c)} → ${bindingLabel(c.binding)}`).join(" · ")}`;
+    form.appendChild(note);
+  }
+  if (prot) {
+    const warn = document.createElement("div");
+    warn.className = "warn";
+    warn.textContent = `Combo / recovery: ${prot}. Changing this key can break that combo.`;
+    form.appendChild(warn);
+  }
+
+  el.appendChild(form);
+}
+
+function onInspectBehaviorChange() {
+  const idx = [...state.selected][0];
+  if (idx == null) return;
+  const next = convertBinding(parseBinding(currentBindings()[idx]?.text || "&trans"), $("inspect-behavior").value, inspectContext());
+  for (const i of state.selected) assignBinding(i, next, { quiet: true, skipInspect: true });
+  renderInspect(true);
+}
+
+function readInspectForm() {
+  const idx = [...state.selected][0];
+  const model = parseBinding(currentBindings()[idx]?.text || "&trans");
+  const beh = $("inspect-behavior")?.value;
+  if (beh) model.behavior = beh;
+  if ($("inspect-layer")) model.layer = $("inspect-layer").value;
+  if ($("inspect-key")) model.key = $("inspect-key").value.trim();
+  if ($("inspect-hold")) model.hold = $("inspect-hold").value;
+  if ($("inspect-bt-cmd")) model.btCmd = $("inspect-bt-cmd").value;
+  if ($("inspect-bt-profile")) model.btProfile = $("inspect-bt-profile").value;
+  const boxes = document.querySelectorAll("#inspect-mods input[type=checkbox]");
+  if (boxes.length) model.mods = [...boxes].filter((el) => el.checked).map((el) => el.value);
+  return model;
+}
+
+function commitInspect() {
+  if (!state.selected.size) return;
+  const model = readInspectForm();
+  const kind = classifyBinding(model, inspectContext());
+  if ((kind === "keypress" || kind === "layer-tap" || kind === "hold-tap") && !model.key) return;
+  const text = formatBinding(model);
+  applyBindingSets(
+    [...state.selected].map((i) => ({ index: i, text })),
+    `P${[...state.selected][0]} → ${text}`,
+    { quiet: true, skipInspect: true, silent: true, noUndo: true }
+  );
+  const raw = $("inspect-raw");
+  if (raw) raw.textContent = text;
+  const pretty = $("inspect-pretty");
+  if (pretty) pretty.textContent = bindingLabel(text);
+  setStatus(`P${[...state.selected][0]} → ${text}`);
+}
+
+function fillInspectKey(text) {
+  const key = keycodeFromBinding(text);
+  const field = $("inspect-key");
+  if (!field || !key) return false;
+  field.value = key;
+  commitInspect();
+  return true;
+}
+
+function bindBoardDeselect() {
+  const wrap = document.querySelector(".kb-wrap");
+  if (!wrap) return;
+  wrap.addEventListener("pointerdown", (ev) => {
+    if (state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft) return;
+    if (ev.button != null && ev.button !== 0) return;
+    if (keyIndexFromPoint(ev.clientX, ev.clientY) != null) return;
+    state.bgClick = { x: ev.clientX, y: ev.clientY };
+  });
+  wrap.addEventListener("pointerup", (ev) => {
+    const bg = state.bgClick;
+    state.bgClick = null;
+    if (!bg || state.drag) return;
+    if (Math.hypot(ev.clientX - bg.x, ev.clientY - bg.y) >= 6) return;
+    if (keyIndexFromPoint(ev.clientX, ev.clientY) != null) return;
+    clearTransientUi();
+    if (state.selected.size) selectOnly(null);
+  });
+}
+
+function setEditingMode() {
+  const on = !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft);
+  const board = document.querySelector(".board");
+  board?.classList.toggle("editing", on);
+  board?.classList.toggle("click-palette", paletteIsClickToAdd());
+  $("session")?.classList.toggle("editing", on);
+  renderPalette();
+}
+
+function bindingTint(text, index) {
+  const model = parseBinding(text);
+  const ctx = inspectContext();
+  const kind = classifyBinding(model, ctx);
+  if (kind === "macro") return "kind-macro";
+  if (isLayerHoldBinding(model) || kind === "layer" || kind === "layer-tap") return "kind-layerhold";
+  if (kind === "hold-tap" || isHomeRowBinding(model, ctx)) return "kind-holdtap";
+  const custom = (state.behaviors || []).find((b) => !b.deleted && b.id === model.behavior);
+  if (custom) return custom.kind === "hold-tap" ? "kind-holdtap" : "kind-other";
+  if (
+    state.combos.some(
+      (c) => !c.deleted && c.positions.includes(index) && comboActiveOnLayer(c, state.layer)
+    )
+  ) {
+    return "kind-combo";
+  }
+  return "";
+}
+
+function fillCategorySelect() {
+  const sel = $("category");
+  sel.replaceChildren();
+  for (const cat of CATEGORIES) {
+    const opt = document.createElement("option");
+    opt.value = cat.id;
+    opt.textContent = cat.label;
+    if (cat.id === state.category) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function renderPalette() {
+  const q = $("search").value.trim().toLowerCase();
+  const cat = CATEGORIES.find((c) => c.id === state.category) ?? CATEGORIES[0];
+  const extra =
+    cat.id === "behaviors"
+      ? [
+          ...state.behaviors
+            .filter((b) => !b.deleted && b.kind !== "other")
+            .map((b) => ({
+              label: b.id,
+              binding: b.kind === "hold-tap" ? `&${b.id} LGUI A` : `&${b.id}`,
+              category: "behaviors",
+              description:
+                b.kind === "hold-tap"
+                  ? `Hold-tap ${b.id} (${b.flavor}, ${b.tappingTerm}ms)`
+                  : `${b.kind} ${b.id}`,
+            })),
+          ...state.macros
+            .filter((m) => !m.deleted)
+            .map((m) => ({
+              label: m.id,
+              binding: `&${m.id}`,
+              category: "behaviors",
+              description: `Macro ${m.id}`,
+            })),
+        ]
+      : cat.id === "layers"
+        ? [
+            { label: "▽", binding: "&trans", category: "layers", description: "Transparent / empty" },
+            { label: "∅", binding: "&none", category: "layers", description: "None (no-op)" },
+            ...state.layers.flatMap((l) => {
+              const tok = layerToken(l.id);
+              const name = displayLayerName(l.id);
+              return [
+                { label: `mo ${name}`, binding: `&mo ${tok}`, category: "layers", description: `Hold for ${name}` },
+                { label: `lt ${name}`, binding: `&lt ${tok} SPACE`, category: "layers", description: `Layer-tap ${name}` },
+                { label: `sl ${name}`, binding: `&sl ${tok}`, category: "layers", description: `Sticky layer ${name}` },
+                { label: `to ${name}`, binding: `&to ${tok}`, category: "layers", description: `Switch to ${name}` },
+              ];
+            }),
+          ]
+        : [];
+  const stock =
+    cat.id === "layers" ? [] : cat.id === "modifiers" ? modifiersForOs(state.settings.os) : PALETTE;
+  const items = [...stock, ...extra].filter((it) => {
+    if (it.category !== cat.id) return false;
+    if (!q) return true;
+    return (
+      it.label.toLowerCase().includes(q) ||
+      it.binding.toLowerCase().includes(q) ||
+      (it.description || "").toLowerCase().includes(q)
+    );
+  });
+  const wrap = $("palette");
+  wrap.dataset.cols = String(cat.cols);
+  wrap.replaceChildren();
+  for (const item of items) {
+    const sw = document.createElement("div");
+    const tint = bindingTint(item.binding, -1);
+    sw.className = tint ? `swatch ${tint}` : "swatch";
+    sw.textContent = item.label;
+    sw.title = item.description ? `${item.description} — ${item.binding}` : item.binding;
+    sw.dataset.binding = item.binding;
+    sw.setAttribute("role", "button");
+    if (paletteIsClickToAdd()) {
+      sw.addEventListener("pointerup", (ev) => {
+        if (ev.button != null && ev.button !== 0) return;
+        ev.preventDefault();
+        applyToSelected(item.binding);
+      });
+    } else {
+      sw.addEventListener("pointerdown", (ev) => startPaletteDrag(ev, item));
+      sw.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (state.suppressPaletteClick) {
+          state.suppressPaletteClick = false;
+          return;
+        }
+        applyToSelected(item.binding);
+      });
+    }
+    wrap.appendChild(sw);
+  }
+}
+
+function currentMacroSeats() {
+  if (!state.macroDraft) return new Map();
+  return new Map(findMacroKeySeats(state.macroDraft.steps, state.layers).map((h) => [h.index, h]));
+}
+
+function renderKeyboard() {
+  const svg = $("keyboard");
+  const keys = state.keys;
+  const bindings = currentBindings();
+  const activators = new Set(currentActivators().map((a) => a.index));
+  const macroSeats = currentMacroSeats();
+  if (keys.length === 0) {
+    svg.replaceChildren();
+    return;
+  }
+  const box = layoutBounds(keys);
+  svg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.width} ${box.height}`);
+  svg.replaceChildren();
+
+  keys.forEach((k, i) => {
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const cx = k.x + k.w / 2;
+    const cy = k.y + k.h / 2;
+    if (k.r) g.setAttribute("transform", `rotate(${k.r} ${k.rx || cx} ${k.ry || cy})`);
+
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", k.x);
+    rect.setAttribute("y", k.y);
+    rect.setAttribute("width", k.w);
+    rect.setAttribute("height", k.h);
+    rect.setAttribute("rx", "14");
+    rect.setAttribute("ry", "14");
+    rect.setAttribute("class", "key-hit");
+    if (!state.behaviorDraft && state.selected.has(i)) rect.classList.add("selected");
+    if (state.comboDraft?.positions.includes(i)) rect.classList.add("combo-member");
+    if (state.combinationDraft?.triggers.some((t) => t.index === i)) rect.classList.add("combo-member");
+    if (state.behaviorDraft?.triggerPositions.includes(i) && isOppositeTrigger(state.behaviorDraft, i)) {
+      rect.classList.add("trigger-member");
+    }
+    if (state.behaviorDraft?.assignments.some((a) => a.layer === state.layer && a.index === i && !a.removed)) {
+      rect.classList.add("hrm-member");
+      if (draftIsHomeRow()) rect.classList.add("kind-homerow");
+    }
+    const seat = macroSeats.get(i);
+    if (seat) rect.classList.add("macro-ref");
+    const tint = bindingTint(displayBindingText(bindings[i]), i);
+    if (tint && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) rect.classList.add(tint);
+    if (activators.has(i)) rect.classList.add("activator");
+    if (currentProtection(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+      rect.classList.add("protected");
+    }
+    rect.dataset.index = String(i);
+
+    const formatted = formatKeyLabel(displayBindingText(bindings[i]));
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("class", "key-label");
+    label.setAttribute("text-anchor", "middle");
+    label.style.fontSize = `${formatted.font}px`;
+    const lineH = formatted.font + 2;
+    const startY = cy - ((formatted.lines.length - 1) * lineH) / 2 + 2;
+    formatted.lines.forEach((line, li) => {
+      const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      tspan.setAttribute("x", cx);
+      tspan.setAttribute("y", startY + li * lineH);
+      tspan.textContent = line;
+      label.appendChild(tspan);
+    });
+
+    const seatLabel = seat ? prettyMacroToken(seat.token) : "";
+    const hold = seatLabel
+      ? ""
+      : bindingHoldHint(displayBindingText(bindings[i])) || (activators.has(i) ? "HOLD" : "");
+    if (seatLabel || hold) {
+      const ht = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      ht.setAttribute("x", cx);
+      ht.setAttribute("y", k.y + 20);
+      ht.setAttribute("class", seatLabel ? "key-macro-ref" : "key-hold");
+      const text = seatLabel || hold;
+      ht.textContent = text.length > 4 ? text.slice(0, 4) : text;
+      g.append(rect, ht, label);
+    } else {
+      g.append(rect, label);
+    }
+
+    const idx = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    idx.setAttribute("x", k.x + 10);
+    idx.setAttribute("y", k.y + k.h - 10);
+    idx.setAttribute("class", "key-idx");
+    idx.textContent = String(i);
+    g.append(idx);
+
+    g.dataset.index = String(i);
+    rect.addEventListener("pointerdown", (ev) => startKeyDrag(ev, i));
+    svg.appendChild(g);
+  });
+  svg.classList.toggle("picking", !!(state.comboDraft || state.behaviorDraft || state.macroDraft));
+}
+
+function keyIndexFromPoint(clientX, clientY) {
+  const stack = document.elementsFromPoint?.(clientX, clientY) || [document.elementFromPoint(clientX, clientY)];
+  for (const el of stack) {
+    if (!el) continue;
+    if (el.classList?.contains("ghost")) continue;
+    if (el.dataset?.index != null && (el.classList?.contains("key-hit") || el.tagName === "g")) {
+      return Number(el.dataset.index);
+    }
+    const hit = el.closest?.(".key-hit, g[data-index]");
+    if (hit?.dataset?.index != null) return Number(hit.dataset.index);
+  }
+  return null;
+}
+
+function paletteIsClickToAdd() {
+  return !!(state.combinationDraft || state.comboDraft || state.macroDraft);
+}
+
+function startPaletteDrag(ev, item) {
+  if (paletteIsClickToAdd()) return;
+  ev.preventDefault();
+  ev.currentTarget.setPointerCapture(ev.pointerId);
+  state.drag = {
+    kind: "palette",
+    binding: item.binding,
+    label: item.label,
+    x: ev.clientX,
+    y: ev.clientY,
+    cap: ev.currentTarget,
+    moved: false,
+    ghost: null,
+  };
+  armDrag();
+}
+
+function emptyBinding() {
+  return state.settings?.emptyBinding || state.emptyBinding || EMPTY_BINDING;
+}
+
+function holdMods() {
+  return holdModChoices(state.settings.os);
+}
+
+function inspectMods() {
+  return inspectModChoices(state.settings.os);
+}
+
+function applySettingsToUi() {
+  setLabelOs(state.settings.os);
+  state.emptyBinding = state.settings.emptyBinding;
+  document.body.classList.toggle("hide-positions", !state.settings.showPositions);
+  document.body.classList.toggle("hide-colors", !state.settings.showColors);
+  if ($("color-legend")) $("color-legend").hidden = !state.settings.showColors;
+  syncSettingsForm();
+}
+
+function syncSettingsForm() {
+  const s = state.settings;
+  if ($("set-os")) $("set-os").value = s.os;
+  if ($("set-empty")) $("set-empty").value = s.emptyBinding;
+  if ($("set-positions")) $("set-positions").checked = !!s.showPositions;
+  if ($("set-colors")) $("set-colors").checked = !!s.showColors;
+  if ($("set-tapping")) $("set-tapping").value = String(s.tappingTerm);
+  if ($("set-combo-timeout")) $("set-combo-timeout").value = String(s.comboTimeout);
+  if ($("set-confirm-apply")) $("set-confirm-apply").checked = !!s.confirmApply;
+}
+
+function commitSettings(partial) {
+  state.settings = saveSettings({ ...state.settings, ...partial });
+  applySettingsToUi();
+  fillHoldSelects();
+  renderPalette();
+  renderKeyboard();
+  renderInspect(true);
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+}
+
+function openSettings() {
+  syncSettingsForm();
+  if ($("settings")) $("settings").hidden = false;
+}
+
+function closeSettings() {
+  if ($("settings")) $("settings").hidden = true;
+}
+
+function fillHoldSelects() {
+  const sel = $("behavior-add-hold");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.replaceChildren();
+  for (const [id, label] of holdMods()) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  else sel.value = holdMods()[0][0];
+}
+
+function startKeyDrag(ev, index) {
+  ev.preventDefault();
+  if (state.combinationDraft) {
+    toggleBuilderTrigger(index);
+    return;
+  }
+  if (state.comboDraft) {
+    toggleComboKey(index);
+    return;
+  }
+  if (state.macroDraft) {
+    placeMacroOnKey(index);
+    return;
+  }
+  if (state.behaviorDraft) {
+    toggleBehaviorKey(index);
+    return;
+  }
+  ev.currentTarget.setPointerCapture(ev.pointerId);
+  const cap = ev.currentTarget;
+  const wasSelected = state.selected.has(index);
+  const multiSelected = state.selected.size > 1;
+  if (ev.shiftKey) {
+    if (wasSelected) state.selected.delete(index);
+    else state.selected.add(index);
+  } else if (!wasSelected) {
+    selectOnly(index);
+  } else {
+    renderKeyboard();
+    renderInspect();
+  }
+  const text = currentBindings()[index]?.text ?? "";
+  state.drag = {
+    kind: "key",
+    from: index,
+    binding: cloneBinding(text),
+    label: bindingLabel(text),
+    x: ev.clientX,
+    y: ev.clientY,
+    cap,
+    moved: false,
+    wasSelected,
+    multiSelected,
+    ghost: null,
+  };
+  armDrag();
+}
+
+function makeGhost(label, ev) {
+  const g = document.createElement("div");
+  g.className = "ghost";
+  g.dataset.zmkGhost = "1";
+  g.textContent = label;
+  g.style.left = `${ev.clientX + 8}px`;
+  g.style.top = `${ev.clientY + 8}px`;
+  document.body.appendChild(g);
+  return g;
+}
+
+function armDrag() {
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragUp);
+  window.addEventListener("pointercancel", onDragCancel);
+}
+
+function clearDragGhosts() {
+  document.querySelectorAll(".ghost[data-zmk-ghost], body > .ghost").forEach((el) => el.remove());
+}
+
+function clearDropTargets() {
+  document.querySelectorAll(".key-hit.drop-target, .key-hit.will-clear, .key-hit.drag-source").forEach((rect) => {
+    rect.classList.remove("drop-target", "will-clear", "drag-source");
+  });
+}
+
+function clearTransientUi(ev) {
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragUp);
+  window.removeEventListener("pointercancel", onDragCancel);
+  document.body.classList.remove("assigning");
+  const drag = state.drag;
+  state.drag = null;
+  if (drag?.cap?.releasePointerCapture && ev?.pointerId != null) {
+    try {
+      if (drag.cap.hasPointerCapture?.(ev.pointerId)) drag.cap.releasePointerCapture(ev.pointerId);
+    } catch {
+      /* already released */
+    }
+  }
+  clearDragGhosts();
+  clearDropTargets();
+  return drag;
+}
+
+function dragDistance(ev, drag) {
+  const dx = ev.clientX - drag.x;
+  const dy = ev.clientY - drag.y;
+  return Math.hypot(dx, dy);
+}
+
+function dropModifiers(ev) {
+  return { ctrl: !!ev.ctrlKey, meta: !!ev.metaKey, alt: !!ev.altKey };
+}
+
+function previewDrop(ev, drag) {
+  const over = keyIndexFromPoint(ev.clientX, ev.clientY);
+  if (drag.kind === "palette") {
+    if (over == null) return null;
+    return {
+      kind: "assign",
+      to: over,
+      sets: [{ index: over, text: cloneBinding(drag.binding) }],
+    };
+  }
+  return planDrop({
+    from: drag.from,
+    to: over,
+    binding: drag.binding,
+    targetBinding: over == null ? "" : currentBindings()[over]?.text,
+    modifiers: dropModifiers(ev),
+    empty: emptyBinding(),
+    clearPx: DRAG_CLEAR_PX,
+    distance: dragDistance(ev, drag),
+  });
+}
+
+function onDragMove(ev) {
+  if (!state.drag) return;
+  const drag = state.drag;
+  if (!drag.moved && dragDistance(ev, drag) >= 6) {
+    drag.moved = true;
+    if (drag.kind === "palette") document.body.classList.add("assigning");
+  }
+  if (drag.moved && !drag.ghost) drag.ghost = makeGhost(drag.label, ev);
+  if (!drag.ghost) return;
+  drag.ghost.style.left = `${ev.clientX + 8}px`;
+  drag.ghost.style.top = `${ev.clientY + 8}px`;
+  const over = keyIndexFromPoint(ev.clientX, ev.clientY);
+  const plan = previewDrop(ev, drag);
+  const kind = plan?.kind || (drag.kind === "palette" ? "assign" : "idle");
+  drag.ghost.className = `ghost ${kind}`;
+  drag.ghost.dataset.zmkGhost = "1";
+  if (kind === "clear") drag.ghost.textContent = "clear";
+  else if (kind === "copy") drag.ghost.textContent = `copy ${drag.label}`;
+  else if (kind === "swap") drag.ghost.textContent = `swap ${drag.label}`;
+  else if (kind === "move") drag.ghost.textContent = `move ${drag.label}`;
+  else if (kind === "assign") drag.ghost.textContent = `assign ${drag.label}`;
+  else drag.ghost.textContent = drag.label;
+  for (const rect of document.querySelectorAll(".key-hit")) {
+    const idx = Number(rect.dataset.index);
+    rect.classList.toggle("drop-target", over != null && idx === over && kind !== "idle");
+    rect.classList.toggle("will-clear", (kind === "move" || kind === "clear") && idx === drag.from);
+    rect.classList.toggle("drag-source", drag.from != null && idx === drag.from);
+  }
+}
+
+function onDragCancel(ev) {
+  clearTransientUi(ev);
+}
+
+function onDragUp(ev) {
+  const drag = clearTransientUi(ev);
+  if (!drag) return;
+  if (drag.kind === "palette" && !drag.moved) {
+    applyToSelected(drag.binding);
+    return;
+  }
+  if (drag.kind === "palette") state.suppressPaletteClick = true;
+  const over = keyIndexFromPoint(ev.clientX, ev.clientY);
+  if (drag.kind === "palette" && state.comboDraft && !state.comboDraft.source?.guarded && over == null) {
+    $("combo-binding").value = drag.binding;
+    updateComboDialogView();
+    return;
+  }
+  const plan = previewDrop(ev, drag);
+  if (!plan) {
+    const action =
+      drag.kind === "key"
+        ? clickKeyAction({
+            wasSelected: drag.wasSelected,
+            multiSelected: drag.multiSelected,
+            moved: drag.moved,
+            shift: ev.shiftKey,
+            over,
+            from: drag.from,
+          })
+        : over != null
+          ? "select"
+          : "keep";
+    if (action === "clear") selectOnly(null);
+    else if (action === "isolate") selectOnly(drag.from);
+    else if (action === "select" && over != null) selectOnly(over);
+    return;
+  }
+  const ok = applyBindingSets(plan.sets, dropLabel(plan.kind, drag.from, over, drag.binding));
+  if (ok && over != null) selectOnly(over);
+  else if (ok && plan.kind === "clear") selectOnly(drag.from);
+}
+
+function applyBindingField(layerIndex, changes, field, opts = {}) {
+  const bindings = state.layers[layerIndex]?.bindings;
+  const list = field === "before" ? [...changes].reverse() : changes;
+  for (const c of list) {
+    if (bindings?.[c.index]) bindings[c.index].text = c[field];
+    queueLive(layerIndex, c.index, c[field]);
+  }
+  state.layer = layerIndex;
+  setDirty(true);
+  renderKeyboard();
+  renderMacros();
+  renderBehaviors();
+  if (!opts.skipInspect) renderInspect();
+}
+
+function applyBindingSets(sets, label, opts = {}) {
+  const layer = currentBindings();
+  const changes = [];
+  for (const { index, text } of sets) {
+    const b = layer[index];
+    if (!b || b.text === text) continue;
+    if (!opts.quiet && !confirmProtected(index, `${label}`)) return false;
+    changes.push({ index, before: b.text, after: text });
+  }
+  if (!changes.length) return false;
+  if (opts.noUndo) {
+    applyBindingField(state.layer, changes, "after", opts);
+  } else {
+    state.history.execute(
+      new BindingSetCommand({
+        layer: state.layer,
+        changes,
+        description: label,
+        apply: applyBindingField,
+      })
+    );
+    updateHistoryButtons();
+  }
+  if (!opts.silent) setStatus(label);
+  return true;
+}
+
+function assignBinding(index, text, opts = {}) {
+  return applyBindingSets([{ index, text }], `P${index} → ${text}`, opts);
+}
+
+function undoBindings() {
+  clearTransientUi();
+  const cmd = state.history.undo();
+  updateHistoryButtons();
+  if (!cmd) {
+    setStatus("Nothing to undo.");
+    return;
+  }
+  afterLayerChange();
+  setStatus(`Undid ${cmd.description}`);
+}
+
+function redoBindings() {
+  clearTransientUi();
+  const cmd = state.history.redo();
+  updateHistoryButtons();
+  if (!cmd) {
+    setStatus("Nothing to redo.");
+    return;
+  }
+  afterLayerChange();
+  setStatus(`Redid ${cmd.description}`);
+}
+
+function typingInField(el) {
+  const tag = el?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable;
+}
+
+function comboKeyCaption(index) {
+  return bindingLabel(displayBindingText(currentBindings()[index])) || `P${index}`;
+}
+
+function comboChipLabel(combo) {
+  return combo.positions.map(comboKeyCaption).join(" + ");
+}
+
+function renderCombos() {
+  renderCombinations();
+}
+
+function combinationEntries() {
+  const draft = state.combinationDraft;
+  const draftId = draft?.source?.item?.id;
+  const items = [];
+  for (const m of state.macros.filter((x) => !x.deleted && visibleOnCurrentLayer(x.id, draft?.source?.type === "macro" ? draftId : null))) {
+    items.push({
+      type: "macro",
+      id: m.id,
+      title: m.id,
+      detail: bindingLabel(`&${m.id}`),
+      tint: "kind-macro",
+      source: m,
+    });
+  }
+  const behDraft =
+    draft?.source?.type === "hold-tap" || draft?.source?.type === "behavior" ? draftId : null;
+  for (const b of state.behaviors.filter((x) => !x.deleted && visibleOnCurrentLayer(x.id, behDraft))) {
+    const hold = b.kind === "hold-tap";
+    items.push({
+      type: hold ? "hold-tap" : "behavior",
+      id: b.id,
+      title: `&${b.id}`,
+      detail: hold ? `Hold-tap ${b.tappingTerm || 280}ms` : b.kind || "behavior",
+      tint: isHomeRowBehavior(b, inspectContext()) ? "kind-homerow" : hold ? "kind-holdtap" : "kind-other",
+      source: b,
+    });
+  }
+  for (const c of state.combos.filter((x) => !x.deleted && comboActiveOnLayer(x, state.layer))) {
+    items.push({
+      type: "combo",
+      id: c.id,
+      title: comboChipLabel(c),
+      detail: bindingLabel(c.binding),
+      tint: "kind-combo",
+      source: c,
+      guarded: c.guarded,
+    });
+  }
+  const filter = state.combinationFilter || "all";
+  return filter === "all" ? items : items.filter((it) => it.type === filter);
+}
+
+function renderCombinations() {
+  const wrap = $("combinations");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const items = combinationEntries();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "combo-meta";
+    empty.textContent = "No combinations on this layer.";
+    wrap.appendChild(empty);
+    return;
+  }
+  const draftId = state.combinationDraft?.source?.item?.id;
+  for (const item of items) {
+    const chip = document.createElement("div");
+    chip.className = `combo-chip ${item.tint}${item.guarded ? " guarded" : ""}${draftId === item.id ? " active" : ""}`;
+    chip.title = `${item.title} · ${item.detail}`;
+    chip.innerHTML = `<span class="combo-keys">${item.title}</span><span>→</span><span class="combo-out">${item.detail}</span>`;
+    if (!item.guarded) {
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "combo-x";
+      x.setAttribute("aria-label", `Delete ${item.title}`);
+      x.textContent = "×";
+      x.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        deleteCombinationItem(item);
+      });
+      chip.appendChild(x);
+    }
+    chip.addEventListener("click", () => openCombinationItem(item));
+    wrap.appendChild(chip);
+  }
+}
+
+function deleteCombinationItem(item) {
+  if (item.type === "combo") deleteCombo(item.source);
+  else if (item.type === "macro") deleteMacro(item.source);
+  else deleteBehavior(item.source);
+}
+
+function openCombinationItem(item) {
+  if (item.type === "combo") {
+    openCombinationBuilder({ type: "combo", item: item.source });
+    return;
+  }
+  if (item.type === "macro") {
+    openCombinationBuilder({ type: "macro", item: item.source });
+    return;
+  }
+  if (item.type === "hold-tap") {
+    openCombinationBuilder({ type: "hold-tap", item: item.source });
+    return;
+  }
+  openBehaviorEditor(item.source);
+}
+
+function builderLabel(item) {
+  if (!item) return "";
+  if (item.index != null) return comboKeyCaption(item.index);
+  if (item.holdMod && !item.binding) return bindingLabel(`&kp ${item.holdMod}`);
+  return bindingLabel(item.binding || "") || item.label || "";
+}
+
+function usedCombinationIds() {
+  const used = new Set();
+  for (const m of state.macros) if (!m.deleted) used.add(m.id);
+  for (const b of state.behaviors) if (!b.deleted) used.add(b.id);
+  for (const c of state.combos) if (!c.deleted) used.add(c.id);
+  const keep = state.combinationDraft?.source?.item?.id;
+  if (keep) used.delete(keep);
+  return used;
+}
+
+function defaultHoldMod() {
+  return holdMods().find(([id]) => id === "LCTRL")?.[0] || holdMods()[0]?.[0] || "LCTRL";
+}
+
+function syncBuilderSteps() {
+  const draft = state.combinationDraft;
+  if (!draft || draft.stepsDirty) return;
+  draft.steps = macroStepsFromKeys(draft.outputs);
+  draft.stepIndex = 0;
+}
+
+function closeOtherEditors() {
+  if (state.comboDraft) closeComboDialog();
+  if (state.macroDraft) closeMacroEditor();
+  if (state.behaviorDraft) closeBehaviorEditor();
+}
+
+function openCombinationBuilder(source = null) {
+  closeOtherEditors();
+  const item = source?.item || null;
+  const isNew = !item;
+  const draft = {
+    source,
+    isNew,
+    name: "",
+    triggers: [],
+    outputs: [],
+    steps: [],
+    stepsDirty: false,
+    stepIndex: 0,
+    tappingTerm: state.settings.tappingTerm,
+    timeout: state.settings.comboTimeout,
+    layers: String(state.layer),
+    advanced: false,
+    holdChoice: null,
+    hrmMode: "set",
+    holdCat: "modifiers",
+    setKeys: [],
+    replaceOk: false,
+    step: "trigger",
+  };
+  if (source?.type === "combo" && item) {
+    draft.name = comboTitle(item);
+    draft.triggers = item.positions.map((index) => ({
+      index,
+      mode: "tap",
+      binding: currentBindings()[index]?.text || "",
+      tap: tapGuess(index),
+    }));
+    draft.timeout = item.timeout || state.settings.comboTimeout;
+    draft.layers = item.layers === "all" ? "" : (item.layers || []).join(" ");
+    const macroId = String(item.binding || "")
+      .trim()
+      .replace(/^&/, "")
+      .split(/\s+/)[0];
+    const linked = state.macros.find((m) => !m.deleted && m.id === macroId);
+    if (linked) {
+      source = { type: "macro", item: linked, combo: item };
+      draft.source = source;
+      draft.name = linked.id;
+      const reversed = outputKeysFromSteps(linked.steps);
+      draft.outputs = reversed.keys;
+      draft.steps = linked.steps.map((s) => ({ ...s }));
+      draft.stepsDirty = reversed.advanced;
+      draft.advanced = reversed.advanced;
+    } else if (isBrokenComboBinding(item.binding)) {
+      draft.outputs = [];
+      draft.name = "";
+      draft.advanced = true;
+    } else {
+      draft.outputs = item.binding ? [{ binding: item.binding, mode: defaultModeForBinding(item.binding) }] : [];
+    }
+  } else if (source?.type === "macro" && item) {
+    draft.name = item.id;
+    const seats = findMacroKeySeats(item.steps, state.layers).filter((s) => s.layer === state.layer);
+    const comboSrc = state.combos.find((c) => !c.deleted && c.binding === `&${item.id}`);
+    if (comboSrc) {
+      draft.triggers = comboSrc.positions.map((index) => ({
+        index,
+        mode: "tap",
+        binding: currentBindings()[index]?.text || "",
+        tap: tapGuess(index),
+      }));
+    } else if (seats.length) {
+      draft.triggers = seats.map((s) => ({
+        index: s.index,
+        mode: defaultModeForBinding(currentBindings()[s.index]?.text),
+        binding: currentBindings()[s.index]?.text || "",
+        tap: tapGuess(s.index),
+        holdMod: modifierFromBinding(currentBindings()[s.index]?.text) || defaultHoldMod(),
+      }));
+    }
+    const reversed = outputKeysFromSteps(item.steps);
+    draft.outputs = reversed.keys;
+    draft.steps = item.steps.map((s) => ({ ...s }));
+    draft.stepsDirty = reversed.advanced;
+    draft.advanced = reversed.advanced;
+  } else if (source?.type === "hold-tap" && item) {
+    draft.name = item.id;
+    draft.tappingTerm = item.tappingTerm || state.settings.tappingTerm;
+    const assigns = collectAssignments(item.id, "hold-tap").filter((a) => !a.removed && a.layer === state.layer);
+    draft.hrmMode = assigns.length > 1 ? "set" : "single";
+    if (assigns[0]) {
+      draft.holdChoice = { kind: "modifier", mod: assigns[0].hold, binding: `&kp ${assigns[0].hold}` };
+      draft.holdCat = "modifiers";
+    }
+    draft.triggers = assigns.map((a) => ({
+      index: a.index,
+      mode: "hold",
+      holdMod: a.hold || defaultHoldMod(),
+      tap: a.tap || tapGuess(a.index),
+      binding: currentBindings()[a.index]?.text || "",
+    }));
+    draft.setKeys = assigns.map((a) => ({ index: a.index, hold: a.hold, tap: a.tap }));
+  }
+  syncBuilderSteps();
+  draft.step = initialBuilderStep(draft);
+  state.combinationDraft = draft;
+  state.selected = new Set(draft.triggers.map((t) => t.index));
+  $("builder-title").textContent = isNew ? "New combination" : `Edit ${item.id || "combination"}`;
+  $("builder-name").value = draft.name;
+  $("builder-term").value = String(draft.tappingTerm);
+  $("builder-timeout").value = String(draft.timeout);
+  $("builder-layers").value = draft.layers;
+  $("builder-advanced").checked = !!draft.advanced;
+  $("builder-delete").hidden = isNew || !!item?.guarded;
+  $("builder-save").disabled = !!item?.guarded;
+  $("combo-builder").hidden = false;
+  $("combo-pick-hint").hidden = false;
+  setEditingMode();
+  renderBuilder();
+  renderKeyboard();
+  renderCombinations();
+}
+
+function closeCombinationBuilder() {
+  state.combinationDraft = null;
+  if ($("builder-conflict")) $("builder-conflict").hidden = true;
+  if ($("combo-builder")) $("combo-builder").hidden = true;
+  if (!state.comboDraft && !state.behaviorDraft && !state.macroDraft && $("combo-pick-hint")) {
+    $("combo-pick-hint").hidden = true;
+  }
+  setEditingMode();
+  renderKeyboard();
+  renderCombinations();
+}
+
+function syncSetKeys() {
+  const draft = state.combinationDraft;
+  if (!draft) return;
+  const fallback = draft.holdChoice?.mod || defaultHoldMod();
+  draft.setKeys = draft.triggers
+    .filter((t) => t.mode === "hold")
+    .map((t) => ({
+      index: t.index,
+      hold: t.holdMod || fallback,
+      tap: t.tap || tapGuess(t.index),
+    }));
+}
+
+function initialBuilderStep(draft) {
+  if (!draft.triggers.length) return "trigger";
+  const oneHold = draft.triggers.length === 1 && draft.triggers[0].mode === "hold";
+  if (oneHold && !draft.holdChoice) return "output";
+  if (!oneHold && !draft.outputs.length) return "output";
+  return "trigger";
+}
+
+function setBuilderStep(step) {
+  const draft = state.combinationDraft;
+  if (!draft || (step !== "trigger" && step !== "output")) return;
+  if (draft.step === step) return;
+  draft.step = step;
+  renderBuilder();
+}
+
+function toggleBuilderTrigger(index) {
+  const draft = state.combinationDraft;
+  if (!draft || draft.source?.item?.guarded) return;
+  draft.step = "trigger";
+  const at = draft.triggers.findIndex((t) => t.index === index);
+  const setMode = draft.hrmMode === "set" && draft.triggers[0]?.mode === "hold" && draft.holdChoice?.kind === "modifier";
+  if (at >= 0) {
+    draft.triggers.splice(at, 1);
+    if (!draft.triggers.length) draft.holdChoice = null;
+  } else {
+    const binding = currentBindings()[index]?.text || "";
+    const parsed = parseHoldTapBinding(binding, binding.trim().split(/\s+/)[0]?.replace(/^&/, "") || "");
+    const forceHold = setMode;
+    const mode = forceHold || parsed ? "hold" : defaultModeForBinding(binding);
+    draft.triggers.push({
+      index,
+      mode,
+      binding,
+      tap: parsed?.tap || tapGuess(index),
+      holdMod: parsed?.hold || (mode === "hold" ? draft.holdChoice?.mod || "" : ""),
+    });
+  }
+  draft.triggers.sort((a, b) => a.index - b.index);
+  state.selected = new Set(draft.triggers.map((t) => t.index));
+  syncSetKeys();
+  draft.replaceOk = false;
+  renderBuilder();
+  renderKeyboard();
+}
+
+function addBuilderOutput(text) {
+  const draft = state.combinationDraft;
+  if (!draft || draft.source?.item?.guarded) return;
+  const binding = String(text || "").trim();
+  if (!binding) return;
+  draft.step = "output";
+  if (draft.triggers.length === 1 && draft.triggers[0].mode === "hold") {
+    applyHoldChoice(holdChoiceFromBinding(binding));
+    return;
+  }
+  appendOutputKey(draft.outputs, binding);
+  draft.stepsDirty = false;
+  syncBuilderSteps();
+  renderBuilder();
+}
+
+function applyHoldChoice(choice) {
+  const draft = state.combinationDraft;
+  if (!draft || !choice) return;
+  draft.step = "output";
+  draft.holdChoice = choice;
+  draft.holdCat = choice.kind === "layer" ? "layers" : choice.kind === "modifier" ? "modifiers" : "keys";
+  if (choice.kind === "modifier") {
+    if (!draft.hrmMode) draft.hrmMode = "set";
+    if (draft.triggers[0]) draft.triggers[0].holdMod = choice.mod;
+    if (draft.triggers.length === 1) draft.triggers[0].mode = "hold";
+  }
+  syncSetKeys();
+  renderBuilder();
+  renderKeyboard();
+}
+
+function builderKindLabel(classified) {
+  if (classified?.kind === "macro" && classified.needsCombo) return "Macro";
+  if (classified?.kind === "combo" && classified.needsMacro) return "Combo + macro";
+  return (
+    {
+      "hold-pick": "Hold",
+      "layer-hold": "Layer hold",
+      "hold-tap": "Home-row",
+      "hold-tap-set": "Home-row set",
+      remap: "Remap",
+      combo: "Combo",
+      macro: "Macro",
+    }[classified?.kind] || classified?.kind || "Combo"
+  );
+}
+
+function renderBuilder() {
+  const draft = state.combinationDraft;
+  if (!draft) return;
+  const classified = classifyCombination(draft);
+  const oneHold = draft.triggers.length === 1 && draft.triggers[0].mode === "hold";
+  const step = draft.step === "output" ? "output" : "trigger";
+  if ($("builder-kind")) $("builder-kind").textContent = builderKindLabel(classified);
+  if ($("builder-output-block")) $("builder-output-block").hidden = oneHold;
+  if ($("builder-hold-output")) $("builder-hold-output").hidden = !oneHold;
+  if ($("builder-hrm-mode")) $("builder-hrm-mode").hidden = !(oneHold && draft.holdChoice?.kind === "modifier");
+  if ($("builder-hrm-set-hint")) $("builder-hrm-set-hint").hidden = classified.kind !== "hold-tap-set";
+  if ($("builder-summary")) $("builder-summary").textContent = combinationSummary(draft, builderLabel);
+  const triggerHint = "Click keys on the layout";
+  const outputHint = oneHold
+    ? "Pick a layer, a modifier, or another key"
+    : "Click keys in the palette";
+  if ($("builder-trigger-hint")) $("builder-trigger-hint").textContent = triggerHint;
+  if ($("builder-output-hint")) $("builder-output-hint").textContent = outputHint;
+  if ($("combo-pick-hint")) {
+    $("combo-pick-hint").textContent =
+      classified.kind === "hold-tap-set"
+        ? "Click more home-row keys and set a modifier for each. They share one behavior."
+        : step === "output"
+          ? oneHold
+            ? "Pick what Hold sends: a layer, a modifier, or another key."
+            : "Click keys in the palette"
+          : "Click keys on the layout";
+  }
+  for (const el of document.querySelectorAll("[data-builder-step]")) {
+    const on = el.dataset.builderStep === step && !el.hidden;
+    el.classList.toggle("step-active", on);
+    el.classList.toggle("step-idle", !on);
+  }
+  document.querySelectorAll("#builder-hold-cats [data-hold-cat]").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset.holdCat === (draft.holdCat || "modifiers"));
+  });
+  document.querySelectorAll("input[name=hrm-mode]").forEach((el) => {
+    el.checked = el.value === (draft.hrmMode || "set");
+  });
+  renderBuilderKeys("builder-triggers", draft.triggers, "trigger", classified);
+  renderBuilderKeys("builder-outputs", draft.outputs, "output", classified);
+  renderHoldChoices(draft);
+  syncBuilderSteps();
+  const adv = $("builder-advanced-panel");
+  if (adv) adv.hidden = !$("builder-advanced")?.checked;
+  const isCombo = classified.kind === "combo";
+  const isMacro = classified.kind === "macro";
+  const holdish = classified.kind === "hold-tap" || classified.kind === "hold-tap-set";
+  if ($("builder-adv-combo")) $("builder-adv-combo").hidden = !(isCombo || (isMacro && classified.needsCombo));
+  if ($("builder-binding-field")) $("builder-binding-field").hidden = !isCombo;
+  if ($("builder-adv-macro")) $("builder-adv-macro").hidden = !isMacro;
+  if ($("builder-term-field")) $("builder-term-field").hidden = !holdish;
+  if ($("builder-timeout-field")) {
+    $("builder-timeout-field").hidden = holdish || classified.kind === "remap" || classified.kind === "layer-hold";
+  }
+  if ($("builder-layers-field")) {
+    $("builder-layers-field").hidden = !isCombo && !(isMacro && classified.needsCombo);
+  }
+  if ($("builder-binding") && document.activeElement !== $("builder-binding")) {
+    const bind = classified.output || (draft.outputs[0] ? asBinding(draft.outputs[0].binding) : "");
+    $("builder-binding").value = isBrokenComboBinding(bind) ? "" : bind;
+  }
+  if ($("builder-def")) {
+    const text = formatBuilderDefinition(draft, classified);
+    $("builder-def").textContent = text;
+    $("builder-def").hidden = !text;
+  }
+  renderBuilderSteps();
+}
+
+function renderHoldChoices(draft) {
+  const wrap = $("builder-hold-choices");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const cat = draft.holdCat || "modifiers";
+  if (cat === "layers") {
+    for (const layer of state.layers) {
+      const tok = layerToken(layer.id);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = displayLayerName(layer.id);
+      btn.classList.toggle("on", draft.holdChoice?.kind === "layer" && draft.holdChoice.layer === tok);
+      btn.addEventListener("click", () => applyHoldChoice({ kind: "layer", layer: tok, behavior: "mo", binding: `&mo ${tok}` }));
+      wrap.appendChild(btn);
+    }
+    return;
+  }
+  if (cat === "modifiers") {
+    for (const [id, label] of holdMods()) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.classList.toggle("on", draft.holdChoice?.kind === "modifier" && draft.holdChoice.mod === id);
+      btn.addEventListener("click", () => applyHoldChoice({ kind: "modifier", mod: id, binding: `&kp ${id}` }));
+      wrap.appendChild(btn);
+    }
+    return;
+  }
+  const hint = document.createElement("div");
+  hint.className = "field-hint";
+  hint.textContent = draft.holdChoice?.kind === "key"
+    ? `Selected ${bindingLabel(draft.holdChoice.binding)}`
+    : "Pick a key from the palette above.";
+  wrap.appendChild(hint);
+}
+
+function renderBuilderKeys(id, keys, role, classified) {
+  const wrap = $(id);
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const setMode = classified?.kind === "hold-tap-set";
+  keys.forEach((key, i) => {
+    const card = document.createElement("div");
+    card.className = "builder-key";
+    const top = document.createElement("div");
+    top.className = "bk-top";
+    const lab = document.createElement("span");
+    lab.className = "bk-label";
+    lab.textContent = builderLabel(key) || `P${key.index ?? i}`;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "bk-x";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      keys.splice(i, 1);
+      if (role === "trigger") {
+        state.selected = new Set(keys.map((t) => t.index));
+        if (!keys.length && state.combinationDraft) state.combinationDraft.holdChoice = null;
+        syncSetKeys();
+      }
+      if (role === "output") {
+        state.combinationDraft.stepsDirty = false;
+        syncBuilderSteps();
+      }
+      renderBuilder();
+      renderKeyboard();
+    });
+    top.append(lab, rm);
+    card.append(top);
+    if (!(role === "trigger" && setMode)) {
+      const mode = document.createElement("select");
+      mode.setAttribute("aria-label", "Tap or Hold");
+      for (const [v, t] of [
+        ["tap", "Tap"],
+        ["hold", "Hold"],
+      ]) {
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = t;
+        if (v === key.mode) opt.selected = true;
+        mode.appendChild(opt);
+      }
+      mode.addEventListener("change", () => {
+        key.mode = mode.value;
+        if (key.mode === "hold" && !key.holdMod && state.combinationDraft?.holdChoice?.mod) {
+          key.holdMod = state.combinationDraft.holdChoice.mod;
+        }
+        if (role === "output") {
+          state.combinationDraft.stepsDirty = false;
+          syncBuilderSteps();
+        }
+        if (role === "trigger") syncSetKeys();
+        renderBuilder();
+      });
+      card.appendChild(mode);
+    }
+    if (role === "trigger" && (setMode || (key.mode === "hold" && classified?.kind === "hold-tap"))) {
+      const hold = document.createElement("select");
+      hold.setAttribute("aria-label", "Hold modifier");
+      for (const [hid, label] of holdMods()) {
+        const opt = document.createElement("option");
+        opt.value = hid;
+        opt.textContent = label;
+        if (hid === (key.holdMod || defaultHoldMod())) opt.selected = true;
+        hold.appendChild(opt);
+      }
+      hold.addEventListener("change", () => {
+        key.holdMod = hold.value;
+        if (i === 0 && state.combinationDraft?.holdChoice?.kind === "modifier") {
+          state.combinationDraft.holdChoice = { kind: "modifier", mod: hold.value, binding: `&kp ${hold.value}` };
+        }
+        syncSetKeys();
+        renderBuilder();
+      });
+      card.appendChild(hold);
+    }
+    wrap.appendChild(card);
+  });
+}
+
+function renderBuilderSteps() {
+  const wrap = $("builder-steps");
+  const draft = state.combinationDraft;
+  if (!wrap || !draft) return;
+  wrap.replaceChildren();
+  if (!draft.steps.length) {
+    const empty = document.createElement("div");
+    empty.className = "field-hint";
+    empty.textContent = "Add output keys to generate Press / Tap / Release steps.";
+    wrap.appendChild(empty);
+    return;
+  }
+  draft.steps.forEach((step, i) => {
+    const row = document.createElement("div");
+    row.className = `macro-step${draft.stepIndex === i ? " active" : ""}`;
+    const kind = document.createElement("select");
+    for (const [k, label] of [
+      ["tap", "Tap"],
+      ["press", "Press"],
+      ["release", "Release"],
+      ["pause", "Pause for release"],
+      ["wait", "Wait ms"],
+    ]) {
+      const opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = label;
+      if (k === step.kind) opt.selected = true;
+      kind.appendChild(opt);
+    }
+    kind.addEventListener("change", () => {
+      step.kind = kind.value;
+      draft.stepsDirty = true;
+      if (step.kind === "pause") step.keys = "";
+      if (step.kind === "wait" && !/^\d+$/.test(step.keys)) step.keys = "100";
+      renderBuilderSteps();
+    });
+    const keys = document.createElement("input");
+    keys.type = "text";
+    keys.value = step.keys || "";
+    keys.disabled = step.kind === "pause";
+    keys.addEventListener("focus", () => {
+      draft.stepIndex = i;
+      renderBuilderSteps();
+    });
+    keys.addEventListener("input", () => {
+      step.keys = keys.value;
+      draft.stepsDirty = true;
+    });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      draft.steps.splice(i, 1);
+      draft.stepsDirty = true;
+      renderBuilderSteps();
+    });
+    row.append(kind, keys, rm);
+    wrap.appendChild(row);
+  });
+}
+
+function addBuilderStep(kind) {
+  const draft = state.combinationDraft;
+  if (!draft) return;
+  draft.stepsDirty = true;
+  draft.steps.push(
+    kind === "pause" ? { kind: "pause", keys: "" } : kind === "wait" ? { kind: "wait", keys: "100" } : { kind, keys: "&kp A" }
+  );
+  draft.stepIndex = draft.steps.length - 1;
+  $("builder-advanced").checked = true;
+  draft.advanced = true;
+  renderBuilder();
+}
+
+function dropCombinationSource(source) {
+  if (!source?.item) return;
+  if (source.type === "combo") source.item.deleted = true;
+  else if (source.type === "macro") source.item.deleted = true;
+  else if (source.type === "hold-tap" || source.type === "behavior") source.item.deleted = true;
+}
+
+function holdBehaviorIds() {
+  return state.behaviors.filter((b) => !b.deleted && b.kind === "hold-tap").map((b) => b.id);
+}
+
+function builderConflicts(draft) {
+  const indexes = new Set();
+  for (const t of draft.triggers || []) if (t.index != null) indexes.add(t.index);
+  for (const k of draft.setKeys || []) if (k.index != null) indexes.add(k.index);
+  const out = [];
+  const ids = holdBehaviorIds();
+  const srcId = draft.source?.item?.id;
+  for (const i of indexes) {
+    const text = currentBindings()[i]?.text || "";
+    if (srcId && text.includes(`&${srcId}`)) continue;
+    const hit = describeHoldConflict(text, ids);
+    if (hit) out.push({ index: i, ...hit });
+  }
+  return out;
+}
+
+function showConflictDialog(conflicts) {
+  const el = $("builder-conflict");
+  const text = $("builder-conflict-text");
+  if (!el || !text) {
+    const ok = window.confirm(
+      `This key is already used as:\n  ${conflicts.map((c) => c.label).join("\n  ")}\n\nReplace it?`
+    );
+    return ok;
+  }
+  const lines = conflicts.map((c) => `P${c.index}  ${c.label}`).join("\n");
+  text.textContent = `This key is already used as:\n  ${lines}\n\nReplace it?`;
+  el.hidden = false;
+  return null;
+}
+
+function findHomeRowBehavior(hand) {
+  const prefer = hand === "right" ? ["hmr", "homerow_mods_right"] : ["hml", "homerow_mods_left"];
+  const named = (state.profile?.homeRowBehaviors || []).filter((id) =>
+    hand === "right" ? /(^hr|right)/i.test(id) : !/(^hr|right)/i.test(id)
+  );
+  return (
+    state.behaviors.find((b) => !b.deleted && b.kind === "hold-tap" && prefer.includes(b.id)) ||
+    state.behaviors.find((b) => !b.deleted && b.kind === "hold-tap" && prefer.includes(b.name)) ||
+    state.behaviors.find((b) => !b.deleted && b.kind === "hold-tap" && named.includes(b.id))
+  );
+}
+
+function saveHoldTapFromBuilder(draft, classified, id) {
+  const fields = {
+    id,
+    name: id,
+    kind: "hold-tap",
+    compatible: "zmk,behavior-hold-tap",
+    tappingTerm: Number($("builder-term").value) || draft.tappingTerm || state.settings.tappingTerm,
+    quickTap: 175,
+    priorIdle: 150,
+    flavor: "balanced",
+    bindings: "<&kp>, <&kp>",
+    bindingList: ["&kp", "&kp"],
+    mods: [],
+    keepMods: [],
+    triggerPositions: [],
+    holdOnRelease: true,
+  };
+  let behavior = draft.source?.type === "hold-tap" ? draft.source.item : null;
+  if (behavior && !behavior.deleted) {
+    Object.assign(behavior, fields);
+    if (!behavior.added) behavior.edited = true;
+  } else {
+    if (draft.source && draft.source.type !== "hold-tap") dropCombinationSource(draft.source);
+    behavior = { ...fields, added: true, deleted: false, edited: false };
+    state.behaviors.push(behavior);
+  }
+  const tap = classified.tap || "A";
+  const hold = classified.hold;
+  applyBehaviorAssignments(id, [
+    { layer: state.layer, index: classified.index, hold, tap, zero: false, removed: false },
+  ]);
+}
+
+function saveComboRecord(fields, sourceCombo) {
+  if (sourceCombo && !sourceCombo.deleted) {
+    Object.assign(sourceCombo, fields);
+    if (!sourceCombo.added) sourceCombo.edited = true;
+    return sourceCombo;
+  }
+  const combo = { ...fields, slowRelease: false, guarded: false, added: true, deleted: false };
+  state.combos.push(combo);
+  return combo;
+}
+
+function saveMacroRecord(fields, sourceMacro) {
+  if (sourceMacro && !sourceMacro.deleted) {
+    Object.assign(sourceMacro, fields);
+    if (!sourceMacro.added) sourceMacro.edited = true;
+    return sourceMacro;
+  }
+  const macro = { ...fields, added: true, deleted: false, edited: false };
+  state.macros.push(macro);
+  return macro;
+}
+
+function saveHoldTapSetFromBuilder(draft, classified, used) {
+  const seed = classified.index;
+  const hand = keyHand(seed);
+  const existing =
+    (draft.source?.type === "hold-tap" && draft.source.item && !draft.source.item.deleted
+      ? draft.source.item
+      : null) || findHomeRowBehavior(hand);
+  const prefer = existing?.id || (hand === "right" ? "hmr" : "hml");
+  const id = existing && !existing.deleted ? existing.id : uniqueSlug(prefer, used);
+  const fields = {
+    id,
+    name: existing?.name || id,
+    kind: "hold-tap",
+    compatible: "zmk,behavior-hold-tap",
+    tappingTerm: Number($("builder-term").value) || draft.tappingTerm || state.settings.tappingTerm,
+    quickTap: existing?.quickTap ?? 175,
+    priorIdle: existing?.priorIdle ?? 150,
+    flavor: existing?.flavor || "balanced",
+    bindings: "<&kp>, <&kp>",
+    bindingList: ["&kp", "&kp"],
+    mods: [],
+    keepMods: [],
+    triggerPositions:
+      existing?.triggerPositions?.length
+        ? existing.triggerPositions
+        : state.keys.map((_, i) => i).filter((i) => keyHand(i) !== hand),
+    holdOnRelease: existing?.holdOnRelease ?? true,
+  };
+  let behavior = existing && !existing.deleted ? existing : null;
+  if (behavior) {
+    Object.assign(behavior, fields);
+    if (!behavior.added) behavior.edited = true;
+  } else {
+    if (draft.source && draft.source.type !== "hold-tap") dropCombinationSource(draft.source);
+    behavior = { ...fields, added: true, deleted: false, edited: false };
+    state.behaviors.push(behavior);
+  }
+  const prev = collectAssignments(id, "hold-tap").filter((a) => a.layer === state.layer);
+  const assigns = (classified.setKeys || []).map((k) => ({
+    layer: state.layer,
+    index: k.index,
+    hold: k.hold,
+    tap: k.tap || "A",
+    zero: false,
+    removed: false,
+  }));
+  for (const a of prev) {
+    if (!assigns.some((x) => x.index === a.index)) assigns.push({ ...a, removed: true });
+  }
+  applyBehaviorAssignments(id, assigns);
+  return id;
+}
+
+function saveCombinationBuilder() {
+  const draft = state.combinationDraft;
+  if (!draft || draft.source?.item?.guarded) {
+    closeCombinationBuilder();
+    return;
+  }
+  const classified = classifyCombination(draft);
+  if (classified.kind === "hold-pick") {
+    setStatus("Pick what Hold should send: a layer, a modifier, or another key.");
+    return;
+  }
+  if (classified.kind === "remap" && !classified.binding) {
+    setStatus("Pick the remapped output from the palette.");
+    return;
+  }
+  if (!draft.replaceOk) {
+    const conflicts = builderConflicts(draft);
+    if (conflicts.length) {
+      const instant = showConflictDialog(conflicts);
+      if (instant === false) return;
+      if (instant == null) return;
+      draft.replaceOk = true;
+    }
+  }
+  const typed = $("builder-name").value.trim();
+  draft.name = typed;
+  const used = usedCombinationIds();
+  const id = uniqueSlug(suggestedName({ ...draft, name: typed }, classified), used);
+  const layers = parseLayersField($("builder-layers").value);
+  if (layers == null) {
+    setStatus("Layers must be blank or numbers like 0 or 0 1.");
+    return;
+  }
+  const timeout = Number($("builder-timeout").value) || draft.timeout || state.settings.comboTimeout;
+  const steps = draft.stepsDirty ? draft.steps.map((s) => ({ ...s })) : macroStepsFromKeys(draft.outputs);
+
+  if (classified.kind === "layer-hold") {
+    const target = state.layers.findIndex((l) => layerToken(l.id) === classified.layer);
+    let host = state.layer;
+    if (target >= 0 && host === target) host = target === 0 ? 1 : 0;
+    if (host < 0 || host >= state.layers.length) host = 0;
+    state.layer = host;
+    assignBinding(classified.index, classified.binding);
+    closeCombinationBuilder();
+    selectLayer(host);
+    selectOnly(classified.index);
+    const hostName = displayLayerName(state.layers[host]?.id);
+    setStatus(`Hold P${classified.index} on ${hostName} opens ${classified.layer}.`);
+    if (!state.layers.some((l) => layerToken(l.id) === classified.layer && !l.added)) {
+      showFlashNeeded("layer", classified.layer);
+    }
+    return;
+  }
+
+  if (classified.kind === "remap") {
+    assignBinding(classified.index, classified.binding);
+    closeCombinationBuilder();
+    setStatus(`P${classified.index} → ${classified.binding}`);
+    return;
+  }
+
+  if (classified.kind === "hold-tap-set") {
+    if (!classified.setKeys?.length) {
+      setStatus("Add at least one home-row key.");
+      return;
+    }
+    const saved = saveHoldTapSetFromBuilder(draft, classified, used);
+    setDirty(true);
+    closeCombinationBuilder();
+    renderPalette();
+    const beh = state.behaviors.find((b) => !b.deleted && b.id === saved);
+    showFlashNeeded("behavior", saved, { created: !!beh?.added });
+    return;
+  }
+
+  if (classified.kind === "hold-tap") {
+    if (classified.index == null || !classified.hold) {
+      setStatus("Pick one layout key and what Hold should send.");
+      return;
+    }
+    saveHoldTapFromBuilder(draft, classified, id);
+    setDirty(true);
+    closeCombinationBuilder();
+    renderPalette();
+    const beh = state.behaviors.find((b) => !b.deleted && b.id === id);
+    showFlashNeeded("behavior", id, { created: !!beh?.added });
+    return;
+  }
+
+  if (classified.kind === "combo" && !classified.needsMacro) {
+    if (classified.positions.length < 2) {
+      setStatus("A combo needs at least two trigger keys.");
+      return;
+    }
+    if (!classified.output) {
+      setStatus("Pick an output key from the palette.");
+      return;
+    }
+    if (draft.source && draft.source.type !== "combo") dropCombinationSource(draft.source);
+    saveComboRecord(
+      { id, positions: classified.positions, binding: classified.output, layers, timeout },
+      draft.source?.type === "combo" ? draft.source.item : null
+    );
+    setDirty(true);
+    closeCombinationBuilder();
+    const saved = state.combos.find((c) => !c.deleted && c.id === id);
+    showFlashNeeded("combo", id, { created: !!saved?.added });
+    return;
+  }
+
+  if (!steps.length) {
+    setStatus("Add output keys, or open advanced and add steps.");
+    return;
+  }
+  const keepCombo = !!(classified.needsCombo || classified.kind === "combo");
+  if (draft.source && draft.source.type !== "macro" && !(keepCombo && draft.source.type === "combo")) {
+    dropCombinationSource(draft.source);
+  }
+  saveMacroRecord(
+    { id, name: id, waitMs: null, steps },
+    draft.source?.type === "macro" ? draft.source.item : null
+  );
+  if (keepCombo) {
+    const positions = (classified.positions || (draft.triggers || []).map((t) => t.index)).filter((n) => n != null);
+    if (positions.length >= 2) {
+      const existing =
+        draft.source?.combo ||
+        (draft.source?.type === "combo" ? draft.source.item : null) ||
+        state.combos.find((c) => !c.deleted && c.binding === `&${id}`);
+      const comboId = existing?.id || uniqueSlug(`combo_${id}`, usedCombinationIds());
+      saveComboRecord(
+        { id: comboId, positions, binding: `&${id}`, layers, timeout },
+        existing || null
+      );
+    }
+  } else if (classified.bindIndex != null) {
+    assignBinding(classified.bindIndex, `&${id}`, { quiet: true });
+  }
+  setDirty(true);
+  closeCombinationBuilder();
+  renderPalette();
+  const mac = state.macros.find((m) => !m.deleted && m.id === id);
+  const comboWrap = state.combos.find((c) => !c.deleted && c.binding === `&${id}`);
+  if (mac?.added) showFlashNeeded("macro", id);
+  else if (comboWrap?.added) showFlashNeeded("combo", comboWrap.id);
+  else showFlashNeeded("params", `&${id}`, { created: false });
+}
+
+function deleteCurrentCombination() {
+  const source = state.combinationDraft?.source;
+  if (!source?.item) {
+    closeCombinationBuilder();
+    return;
+  }
+  deleteCombinationItem({ type: source.type, source: source.item, title: source.item.id });
+  closeCombinationBuilder();
+}
+
+function slugComboId(name, positions) {
+  const slug = String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+  if (slug) return slug.startsWith("combo_") ? slug : `combo_${slug}`;
+  return `combo_${positions.join("_")}`;
+}
+
+function parseLayersField(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return "all";
+  const nums = t.split(/[,\s]+/).filter(Boolean).map(Number);
+  if (!nums.length || nums.some((n) => Number.isNaN(n))) return null;
+  return nums;
+}
+
+function updateComboDialogView() {
+  const draft = state.comboDraft;
+  if (!draft) return;
+  const labels = draft.positions.map(comboKeyCaption);
+  $("combo-keys-pill").textContent = draft.positions.length
+    ? `keys: ${labels.join(" + ")}`
+    : "keys: click the board";
+  $("combo-output-preview").textContent = bindingLabel($("combo-binding").value || "");
+}
+
+function openComboDialog(combo) {
+  openCombinationBuilder(combo ? { type: "combo", item: combo } : null);
+}
+
+function openComboDialogLegacy(combo) {
+  if (state.behaviorDraft) closeBehaviorEditor();
+  if (state.macroDraft) closeMacroEditor();
+  const isNew = !combo;
+  const positions = isNew ? [...state.selected].sort((a, b) => a - b) : [...combo.positions];
+  state.comboDraft = {
+    source: combo || null,
+    isNew,
+    positions,
+  };
+  $("combo-dialog-title").textContent = isNew ? "New combo" : "Edit combo";
+  $("combo-name").value = isNew ? "" : comboTitle(combo);
+  $("combo-binding").value = isNew ? "&kp ESC" : combo.binding;
+  $("combo-timeout").value = String(isNew ? state.settings.comboTimeout : combo.timeout || state.settings.comboTimeout);
+  $("combo-layers").value = isNew
+    ? String(state.layer)
+    : combo.layers === "all"
+      ? ""
+      : combo.layers.join(" ");
+  $("combo-delete").hidden = isNew || !!combo.guarded;
+  $("combo-save").disabled = !!combo?.guarded;
+  $("combo-name").disabled = !!combo?.guarded;
+  $("combo-binding").disabled = !!combo?.guarded;
+  $("combo-editor").hidden = false;
+  $("combo-pick-hint").hidden = false;
+  $("combo-pick-hint").textContent = "Click keys on the board to add or remove them from this combo.";
+  setEditingMode();
+  updateComboDialogView();
+  state.selected = new Set(positions);
+  renderKeyboard();
+  renderCombos();
+}
+
+function closeComboDialog() {
+  state.comboDraft = null;
+  $("combo-editor").hidden = true;
+  $("combo-pick-hint").hidden = true;
+  setEditingMode();
+  renderKeyboard();
+  renderCombos();
+}
+
+function saveComboDialog() {
+  const draft = state.comboDraft;
+  if (!draft || draft.source?.guarded) {
+    closeComboDialog();
+    return;
+  }
+  const positions = [...new Set(draft.positions)].sort((a, b) => a - b);
+  if (positions.length < 2) {
+    setStatus("A combo needs at least two keys. Click them on the board.");
+    return;
+  }
+  const binding = $("combo-binding").value.trim();
+  if (!binding.startsWith("&")) {
+    setStatus("Output must be a binding, e.g. &kp ESC.");
+    return;
+  }
+  const layers = parseLayersField($("combo-layers").value);
+  if (layers == null) {
+    setStatus("Layers must be blank or numbers like 0 or 0 1.");
+    return;
+  }
+  const timeout = Number($("combo-timeout").value) || state.settings.comboTimeout;
+  const name = $("combo-name").value.trim();
+  if (draft.isNew) {
+    state.combos.push({
+      id: slugComboId(name, positions),
+      positions,
+      binding,
+      layers,
+      timeout,
+      slowRelease: false,
+      guarded: false,
+      added: true,
+      deleted: false,
+    });
+  } else {
+    const c = draft.source;
+    if (name) c.id = slugComboId(name, positions);
+    c.positions = positions;
+    c.binding = binding;
+    c.layers = layers;
+    c.timeout = timeout;
+    if (!c.added) c.edited = true;
+  }
+  setDirty(true);
+  closeComboDialog();
+  showFlashNeeded("combo", slugComboId(name, positions) || "combo", { created: !!draft.isNew });
+}
+
+function deleteCombo(combo) {
+  if (!combo || combo.guarded) return;
+  combo.deleted = true;
+  setDirty(true);
+  if (state.combinationDraft?.source?.item === combo) closeCombinationBuilder();
+  else if (state.comboDraft) closeComboDialog();
+  else {
+    renderKeyboard();
+    renderCombos();
+    renderInspect();
+  }
+  showFlashNeeded("params", comboTitle(combo), { created: false });
+}
+
+function toggleComboKey(index) {
+  if (!state.comboDraft || state.comboDraft.source?.guarded) return;
+  const pos = state.comboDraft.positions;
+  const at = pos.indexOf(index);
+  if (at >= 0) pos.splice(at, 1);
+  else pos.push(index);
+  pos.sort((a, b) => a - b);
+  state.selected = new Set(pos);
+  updateComboDialogView();
+  renderKeyboard();
+}
+
+function usedOnCurrentLayer(id) {
+  return layersUsingId(state.layers, id).includes(state.layer);
+}
+
+function unusedOnBoard(id) {
+  return layersUsingId(state.layers, id).length === 0;
+}
+
+function visibleOnCurrentLayer(id, draftId) {
+  if (draftId && draftId === id) return true;
+  if (usedOnCurrentLayer(id)) return true;
+  return unusedOnBoard(id);
+}
+
+function renderBehaviors() {
+  renderCombinations();
+}
+
+function keyHand(index) {
+  return state.keys[index]?.hand === "right" ? "right" : "left";
+}
+
+function draftIsHomeRow() {
+  const draft = state.behaviorDraft;
+  if (!draft) return false;
+  return isHomeRowBehavior(
+    {
+      id: $("behavior-id")?.value || draft.source?.id || "",
+      name: $("behavior-name")?.value || draft.source?.name || "",
+      kind: currentBehaviorKind() || draft.source?.kind || "hold-tap",
+      triggerPositions: draft.triggerPositions,
+    },
+    inspectContext()
+  );
+}
+
+function holdAssignHint() {
+  const using = draftIsHomeRow()
+    ? "Indigo = keys using this home-row mod"
+    : "Blue = keys using this hold-tap";
+  return `Gold = opposite hand. ${using}.`;
+}
+
+function behaviorHomeHand(draft) {
+  const assigns = (draft?.assignments || []).filter((a) => !a.removed);
+  if (assigns.length) {
+    const left = assigns.filter((a) => keyHand(a.index) === "left").length;
+    return left >= assigns.length / 2 ? "left" : "right";
+  }
+  const id = $("behavior-id")?.value || draft?.source?.id || "";
+  if (/(^hr|right)/i.test(id)) return "right";
+  return "left";
+}
+
+function isOppositeTrigger(draft, index) {
+  return keyHand(index) !== behaviorHomeHand(draft);
+}
+
+function behaviorClickMode() {
+  return document.querySelector('input[name="behavior-mode"]:checked')?.value || "triggers";
+}
+
+function parseHoldTapBinding(text, id) {
+  const parts = String(text || "").trim().split(/\s+/);
+  if (parts[0] !== `&${id}` || parts.length < 3) return null;
+  return { hold: parts[1], tap: parts.slice(2).join(" ") };
+}
+
+function collectAssignments(id, kind = "hold-tap") {
+  const out = [];
+  if (!id) return out;
+  state.layers.forEach((layer, li) => {
+    layer.bindings.forEach((b, i) => {
+      const text = b.text.trim();
+      if (kind === "hold-tap") {
+        const parsed = parseHoldTapBinding(text, id);
+        if (!parsed) return;
+        out.push({ layer: li, index: i, hold: parsed.hold, tap: parsed.tap, removed: false });
+        return;
+      }
+      if (text === `&${id}`) {
+        out.push({ layer: li, index: i, hold: "", tap: "", zero: true, removed: false });
+      }
+    });
+  });
+  return out;
+}
+
+const MORPH_MODS = ["LSFT", "RSFT", "LCTL", "RCTL", "LALT", "RALT", "LGUI", "RGUI"];
+
+function fillMorphMods(selected = ["LSFT"]) {
+  const wrap = $("morph-mods");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  for (const name of MORPH_MODS) {
+    const lab = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = name;
+    box.checked = selected.includes(name);
+    lab.append(box, document.createTextNode(` ${name}`));
+    wrap.appendChild(lab);
+  }
+}
+
+function selectedMorphMods() {
+  return [...document.querySelectorAll("#morph-mods input:checked")].map((el) => el.value);
+}
+
+function currentBehaviorKind() {
+  return $("behavior-type")?.value || "hold-tap";
+}
+
+function syncBehaviorTypeUI() {
+  const kind = currentBehaviorKind();
+  $("bh-holdtap").hidden = kind !== "hold-tap";
+  $("bh-morph").hidden = kind !== "mod-morph";
+  $("bh-dance").hidden = kind !== "tap-dance";
+  $("behavior-mode").hidden = kind !== "hold-tap";
+  $("behavior-keys-pill").hidden = kind !== "hold-tap";
+  if (kind !== "hold-tap" && state.behaviorDraft) state.behaviorDraft.placing = true;
+}
+
+function tapGuess(index) {
+  const text = currentBindings()[index]?.text ?? "";
+  const parts = text.trim().split(/\s+/);
+  if (parts[0] === "&trans" || parts[0] === "&none" || !parts[0]) return "";
+  if (parts[0] === "&kp" && parts[1]) return parts[1];
+  if (parts.length >= 3) return parts[parts.length - 1];
+  return "";
+}
+
+function updateBehaviorView() {
+  const draft = state.behaviorDraft;
+  if (!draft) return;
+  $("behavior-keys-pill").textContent =
+    behaviorClickMode() === "mods"
+      ? `homerow: ${draft.assignments.filter((a) => !a.removed && a.layer === state.layer).length} on this layer`
+      : draft.triggerPositions.length
+        ? `triggers: ${draft.triggerPositions.length} keys`
+        : "triggers: click the board";
+  renderBehaviorAssignments();
+}
+
+function renderBehaviorAssignments() {
+  const wrap = $("behavior-assigns");
+  const draft = state.behaviorDraft;
+  if (!wrap || !draft) return;
+  wrap.replaceChildren();
+  const allLayers = $("behavior-all-layers")?.checked;
+  const rows = draft.assignments.filter((a) => !a.removed && (allLayers || a.layer === state.layer));
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "assign-empty";
+    empty.textContent = "None on this layer. Use Add below, then click the key on the board.";
+    wrap.appendChild(empty);
+  }
+  for (const a of rows) {
+    const row = document.createElement("div");
+    row.className = "assign-row";
+    const layerName = state.layers[a.layer]?.id.replace(/_layer$/, "") || a.layer;
+    const pos = document.createElement("div");
+    pos.className = "pos";
+    pos.textContent = allLayers ? `${layerName} P${a.index}` : `P${a.index}`;
+    const hold = document.createElement("select");
+    for (const [id, label] of holdMods()) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = label;
+      if (id === a.hold) opt.selected = true;
+      hold.appendChild(opt);
+    }
+    if (!holdMods().some(([id]) => id === a.hold)) {
+      const opt = document.createElement("option");
+      opt.value = a.hold;
+      opt.textContent = a.hold;
+      opt.selected = true;
+      hold.appendChild(opt);
+    }
+    hold.addEventListener("change", () => {
+      a.hold = hold.value;
+    });
+    const tap = document.createElement("input");
+    tap.type = "text";
+    tap.value = a.tap;
+    tap.addEventListener("input", () => {
+      a.tap = tap.value.trim();
+    });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      a.removed = true;
+      updateBehaviorView();
+      renderKeyboard();
+    });
+    row.append(pos, hold, tap, rm);
+    wrap.appendChild(row);
+  }
+}
+
+function openBehaviorEditor(behavior) {
+  if (!behavior) {
+    openCombinationBuilder(null);
+    return;
+  }
+  if (state.comboDraft) closeComboDialog();
+  if (state.macroDraft) closeMacroEditor();
+  if (state.combinationDraft) closeCombinationBuilder();
+  const isNew = !behavior;
+  const id = isNew ? "" : behavior.id;
+  state.behaviorDraft = {
+    source: behavior || null,
+    isNew,
+    clickMode: "triggers",
+    placing: false,
+    triggerPositions: isNew ? [] : [...(behavior.triggerPositions || [])],
+    assignments: collectAssignments(id, isNew ? "hold-tap" : behavior.kind),
+  };
+  state.behaviorDraft.triggerPositions = state.behaviorDraft.triggerPositions.filter((i) =>
+    isOppositeTrigger(state.behaviorDraft, i)
+  );
+  $("behavior-title").textContent = isNew ? "New behavior" : `Edit &${behavior.id}`;
+  $("behavior-type").value = isNew ? "hold-tap" : behavior.kind === "other" ? "hold-tap" : behavior.kind;
+  $("behavior-type").disabled = !isNew && behavior.kind === "other";
+  $("behavior-id").value = id;
+  $("behavior-id").disabled = !isNew && behavior.kind === "other";
+  $("behavior-name").value = isNew ? "" : behavior.name;
+  $("morph-default").value = isNew ? "&kp DOT" : behavior.bindingList?.[0] || "&kp DOT";
+  $("morph-held").value = isNew ? "&kp COMMA" : behavior.bindingList?.[1] || "&kp COMMA";
+  $("dance-1").value = isNew ? "&kp N1" : behavior.bindingList?.[0] || "&kp N1";
+  $("dance-2").value = isNew ? "&kp N2" : behavior.bindingList?.[1] || "&kp N2";
+  $("dance-term").value = String(isNew ? 200 : behavior.tappingTerm || 200);
+  fillMorphMods(isNew ? ["LSFT"] : behavior.mods?.length ? behavior.mods : ["LSFT"]);
+  $("morph-mask").checked = isNew ? true : !(behavior.keepMods && behavior.keepMods.length);
+  syncBehaviorTypeUI();
+  $("behavior-flavor").value = isNew ? "balanced" : behavior.flavor || "balanced";
+  $("behavior-term").value = String(isNew ? state.settings.tappingTerm : behavior.tappingTerm || state.settings.tappingTerm);
+  $("behavior-quick").value = String(isNew ? 175 : behavior.quickTap ?? 175);
+  $("behavior-idle").value = String(isNew ? 150 : behavior.priorIdle ?? 150);
+  $("behavior-on-release").checked = isNew ? true : !!behavior.holdOnRelease;
+  $("behavior-delete").hidden = isNew;
+  const triggerRadio = document.querySelector('input[name="behavior-mode"][value="triggers"]');
+  if (triggerRadio) triggerRadio.checked = true;
+  if ($("behavior-all-layers")) $("behavior-all-layers").checked = false;
+  state.behaviorDraft.placing = false;
+  $("behavior-place")?.closest(".add-row")?.classList.remove("placing");
+  $("behavior-editor").hidden = false;
+  $("combo-pick-hint").hidden = false;
+  $("combo-pick-hint").textContent = holdAssignHint();
+  if ($("behavior-add-tap")) $("behavior-add-tap").value = "";
+  setEditingMode();
+  state.selected = new Set();
+  updateBehaviorView();
+  renderKeyboard();
+  renderBehaviors();
+}
+
+function renderMacros() {
+  renderCombinations();
+}
+
+function renderMacroSteps() {
+  const wrap = $("macro-steps");
+  const draft = state.macroDraft;
+  if (!wrap || !draft) return;
+  wrap.replaceChildren();
+  $("macro-pill").textContent = `${draft.steps.length} step${draft.steps.length === 1 ? "" : "s"}`;
+  draft.steps.forEach((step, i) => {
+    const row = document.createElement("div");
+    row.className = `macro-step${draft.stepIndex === i ? " active" : ""}`;
+    const kind = document.createElement("select");
+    for (const [k, label] of [
+      ["tap", "Tap"],
+      ["press", "Press"],
+      ["release", "Release"],
+      ["pause", "Pause for release"],
+      ["wait", "Wait ms"],
+    ]) {
+      const opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = label;
+      if (k === step.kind) opt.selected = true;
+      kind.appendChild(opt);
+    }
+    kind.addEventListener("change", () => {
+      step.kind = kind.value;
+      if (step.kind === "pause") step.keys = "";
+      if (step.kind === "wait" && !/^\d+$/.test(step.keys)) step.keys = "100";
+      renderMacroSteps();
+    });
+    const keys = document.createElement("input");
+    keys.type = "text";
+    keys.placeholder = step.kind === "pause" ? "—" : step.kind === "wait" ? "100" : "&kp LGUI";
+    keys.value = step.keys || "";
+    keys.disabled = step.kind === "pause";
+    keys.addEventListener("focus", () => {
+      draft.stepIndex = i;
+      renderMacroSteps();
+    });
+    keys.addEventListener("input", () => {
+      step.keys = keys.value;
+      updateMacroHint();
+      renderKeyboard();
+    });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      draft.steps.splice(i, 1);
+      if (draft.stepIndex >= draft.steps.length) draft.stepIndex = Math.max(0, draft.steps.length - 1);
+      renderMacroSteps();
+    });
+    row.append(kind, keys, rm);
+    wrap.appendChild(row);
+  });
+  updateMacroHint();
+  renderKeyboard();
+}
+
+function updateMacroHint() {
+  const hint = $("combo-pick-hint");
+  if (!hint || !state.macroDraft) return;
+  const tokens = extractMacroTapTokens(state.macroDraft.steps).map(prettyMacroToken);
+  const mid = slugBehaviorId($("macro-id")?.value || "") || state.macroDraft.source?.id;
+  const bind = mid ? `&${mid}` : "this macro";
+  hint.textContent = tokens.length
+    ? `Light blue = ${tokens.join(", ")} — the key this macro types. Click a key to bind ${bind} there.`
+    : `Click a key on the board to bind ${bind} there. Palette fills the selected step.`;
+}
+
+function openMacroEditor(macro) {
+  openCombinationBuilder(macro ? { type: "macro", item: macro } : null);
+}
+
+function closeMacroEditor() {
+  state.macroDraft = null;
+  $("macro-editor").hidden = true;
+  if (!state.comboDraft && !state.behaviorDraft) {
+    $("combo-pick-hint").hidden = true;
+  }
+  setEditingMode();
+  renderMacros();
+  renderKeyboard();
+}
+
+function addMacroStep(kind) {
+  const draft = state.macroDraft;
+  if (!draft) return;
+  const step =
+    kind === "pause"
+      ? { kind: "pause", keys: "" }
+      : kind === "wait"
+        ? { kind: "wait", keys: "100" }
+        : { kind, keys: "&kp A" };
+  draft.steps.push(step);
+  draft.stepIndex = draft.steps.length - 1;
+  renderMacroSteps();
+  renderKeyboard();
+}
+
+function saveMacroEditor() {
+  const draft = state.macroDraft;
+  if (!draft) return;
+  const id = slugBehaviorId($("macro-id").value);
+  if (!id) {
+    setStatus("Macro needs a label, e.g. mac_lock.");
+    return;
+  }
+  if (draft.isNew && state.macros.some((m) => !m.deleted && m.id === id)) {
+    setStatus(`&${id} already exists.`);
+    return;
+  }
+  const waitRaw = $("macro-wait").value.trim();
+  const fields = {
+    id,
+    name: slugBehaviorId($("macro-name").value) || id,
+    waitMs: waitRaw === "" ? null : Number(waitRaw),
+    steps: draft.steps.map((s) => ({ kind: s.kind, keys: s.keys })),
+  };
+  if (draft.isNew) state.macros.push({ ...fields, added: true, deleted: false, edited: false });
+  else {
+    Object.assign(draft.source, fields);
+    if (!draft.source.added) draft.source.edited = true;
+  }
+  setDirty(true);
+  closeMacroEditor();
+  renderPalette();
+  showFlashNeeded("macro", id, { created: !!draft.isNew });
+}
+
+function deleteMacro(macro) {
+  if (!macro) return;
+  const used = state.layers.some((layer) =>
+    layer.bindings.some((b) => b.text.trim() === `&${macro.id}`)
+  );
+  if (used && !window.confirm(`&${macro.id} is used on the keymap. Delete it anyway?`)) return;
+  macro.deleted = true;
+  setDirty(true);
+  if (state.combinationDraft?.source?.item === macro) closeCombinationBuilder();
+  else closeMacroEditor();
+  renderPalette();
+  showFlashNeeded("params", `&${macro.id}`, { created: false });
+}
+
+function placeMacroOnKey(index) {
+  const id = slugBehaviorId($("macro-id").value) || state.macroDraft?.source?.id;
+  if (!id) {
+    setStatus("Set a macro label first, then click a key.");
+    return;
+  }
+  assignBinding(index, `&${id}`);
+}
+
+function fillMacroStepFromPalette(text) {
+  const draft = state.macroDraft;
+  if (!draft?.steps.length) return;
+  const i = Math.min(draft.stepIndex || 0, draft.steps.length - 1);
+  const step = draft.steps[i];
+  if (step.kind === "pause") return;
+  if (step.kind === "wait") {
+    step.keys = text.replace(/\D/g, "") || step.keys;
+  } else {
+    step.keys = step.keys ? `${step.keys} ${text}` : text;
+  }
+  renderMacroSteps();
+  renderKeyboard();
+}
+
+function closeBehaviorEditor() {
+  state.behaviorDraft = null;
+  $("behavior-editor").hidden = true;
+  if (!state.comboDraft && !state.macroDraft) {
+    $("combo-pick-hint").hidden = true;
+  }
+  setEditingMode();
+  renderKeyboard();
+  renderBehaviors();
+}
+
+function slugBehaviorId(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^&/, "")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function saveBehaviorEditor() {
+  const draft = state.behaviorDraft;
+  if (!draft) return;
+  const id = slugBehaviorId($("behavior-id").value);
+  if (!id) {
+    setStatus("Behavior needs a label, e.g. hml.");
+    return;
+  }
+  if (draft.isNew && state.behaviors.some((b) => !b.deleted && b.id === id)) {
+    setStatus(`&${id} already exists.`);
+    return;
+  }
+  const kind = currentBehaviorKind();
+  const mods = selectedMorphMods();
+  const fields = {
+    id,
+    name: slugBehaviorId($("behavior-name").value) || id,
+    kind,
+    compatible:
+      kind === "mod-morph"
+        ? "zmk,behavior-mod-morph"
+        : kind === "tap-dance"
+          ? "zmk,behavior-tap-dance"
+          : "zmk,behavior-hold-tap",
+    tappingTerm: Number(kind === "tap-dance" ? $("dance-term").value : $("behavior-term").value) || (kind === "tap-dance" ? 200 : state.settings.tappingTerm),
+    quickTap: Number($("behavior-quick").value) || 0,
+    priorIdle: Number($("behavior-idle").value) || 0,
+    flavor: $("behavior-flavor").value || "balanced",
+    bindings: "<&kp>, <&kp>",
+    bindingList:
+      kind === "mod-morph"
+        ? [$("morph-default").value.trim() || "&kp DOT", $("morph-held").value.trim() || "&kp COMMA"]
+        : kind === "tap-dance"
+          ? [$("dance-1").value.trim() || "&kp N1", $("dance-2").value.trim() || "&kp N2"]
+          : ["&kp", "&kp"],
+    mods,
+    keepMods: $("morph-mask").checked ? [] : mods,
+    triggerPositions: [...draft.triggerPositions].sort((a, b) => a - b),
+    holdOnRelease: $("behavior-on-release").checked,
+  };
+  if (draft.isNew) {
+    state.behaviors.push({ ...fields, added: true, deleted: false, edited: false });
+  } else {
+    Object.assign(draft.source, fields);
+    if (!draft.source.added) draft.source.edited = true;
+  }
+  applyBehaviorAssignments(id, draft.assignments);
+  setDirty(true);
+  closeBehaviorEditor();
+  renderPalette();
+  showFlashNeeded("behavior", id, { created: !!draft.isNew });
+}
+
+function applyBehaviorAssignments(id, assignments) {
+  for (const a of assignments) {
+    const layer = state.layers[a.layer]?.bindings;
+    if (!layer?.[a.index]) continue;
+    if (a.removed) {
+      if (a.zero) {
+        if (layer[a.index].text.trim() === `&${id}`) layer[a.index].text = "&trans";
+      } else {
+        const cur = parseHoldTapBinding(layer[a.index].text, id);
+        if (cur) layer[a.index].text = `&kp ${a.tap || cur.tap}`;
+      }
+      continue;
+    }
+    if (a.zero) {
+      layer[a.index].text = `&${id}`;
+      continue;
+    }
+    if (!a.hold || !a.tap) continue;
+    layer[a.index].text = `&${id} ${a.hold} ${a.tap}`;
+  }
+}
+
+function deleteBehavior(behavior) {
+  if (!behavior) return;
+  const used = state.layers.some((layer) =>
+    layer.bindings.some((b) => b.text.trim().startsWith(`&${behavior.id} `) || b.text.trim() === `&${behavior.id}`)
+  );
+  if (used && !window.confirm(`&${behavior.id} is used on the keymap. Delete it anyway?`)) return;
+  behavior.deleted = true;
+  setDirty(true);
+  if (state.combinationDraft?.source?.item === behavior) closeCombinationBuilder();
+  else closeBehaviorEditor();
+  renderPalette();
+  showFlashNeeded("params", `&${behavior.id}`, { created: false });
+}
+
+function addAssignmentOnKey(index, hold, tap) {
+  const draft = state.behaviorDraft;
+  if (!draft) return;
+  const existing = draft.assignments.find((a) => a.layer === state.layer && a.index === index);
+  const zero = !hold && !tap;
+  if (existing) {
+    existing.removed = false;
+    existing.hold = hold;
+    existing.tap = tap;
+    existing.zero = zero;
+  } else {
+    draft.assignments.push({ layer: state.layer, index, hold, tap, zero, removed: false });
+  }
+  draft.placing = false;
+  $("behavior-place")?.closest(".add-row")?.classList.remove("placing");
+  if ($("behavior-add-tap")) $("behavior-add-tap").value = tap;
+  $("behavior-place-hint").textContent = `Added ${hold} + ${tap} on P${index}. Save behavior to keep it.`;
+  updateBehaviorView();
+  renderKeyboard();
+}
+
+function toggleBehaviorKey(index) {
+  const draft = state.behaviorDraft;
+  if (!draft) return;
+  const kind = currentBehaviorKind();
+  if (kind === "mod-morph" || kind === "tap-dance") {
+    addAssignmentOnKey(index, "", "");
+    const row = draft.assignments.find((a) => a.layer === state.layer && a.index === index);
+    if (row) row.zero = true;
+    return;
+  }
+  if (draft.placing || behaviorClickMode() === "mods") {
+    if (draft.placing) {
+      const hold = $("behavior-add-hold")?.value || "LGUI";
+      const typed = $("behavior-add-tap")?.value.trim();
+      const tap = typed || tapGuess(index);
+      addAssignmentOnKey(index, hold, tap);
+      return;
+    }
+    const existing = draft.assignments.find((a) => a.layer === state.layer && a.index === index && !a.removed);
+    if (existing) existing.removed = true;
+    else {
+      const hold = $("behavior-add-hold")?.value || "LGUI";
+      addAssignmentOnKey(index, hold, tapGuess(index));
+      return;
+    }
+    state.selected = new Set(
+      draft.assignments.filter((a) => !a.removed && a.layer === state.layer).map((a) => a.index)
+    );
+    updateBehaviorView();
+    renderKeyboard();
+    return;
+  }
+  if (!isOppositeTrigger(draft, index)) {
+    setStatus("That key is on the same hand as the mods. Use Place on key to assign a hold, or click the opposite hand for triggers.");
+    return;
+  }
+  const pos = draft.triggerPositions;
+  const at = pos.indexOf(index);
+  if (at >= 0) pos.splice(at, 1);
+  else pos.push(index);
+  pos.sort((a, b) => a - b);
+  updateBehaviorView();
+  renderKeyboard();
+}
+
+function applyToSelected(text) {
+  if (state.combinationDraft) {
+    addBuilderOutput(text);
+    return;
+  }
+  if (state.macroDraft) {
+    fillMacroStepFromPalette(text);
+    return;
+  }
+  const focus = document.activeElement;
+  if (focus?.dataset?.inspect === "key" && $("inspect")?.contains(focus)) {
+    if (fillInspectKey(text)) return;
+  }
+  if (state.comboDraft && !state.comboDraft.source?.guarded) {
+    $("combo-binding").value = text;
+    updateComboDialogView();
+    return;
+  }
+  if (state.selected.size === 0) {
+    setStatus("Select a key first, or drag the binding onto one.");
+    return;
+  }
+  applyBindingSets(
+    [...state.selected].map((i) => ({ index: i, text })),
+    state.selected.size === 1 ? `P${[...state.selected][0]} → ${text}` : `Assign ${text}`
+  );
+}
+
+function bindingsDifferFromFile() {
+  for (const layer of state.layers) {
+    for (const b of layer.bindings) {
+      if (b.start == null || b.end == null) return true;
+      if (b.text !== state.original.slice(b.start, b.end)) return true;
+    }
+  }
+  return false;
+}
+
+async function refreshFromKeyboard() {
+  if (!state.studio) {
+    setStatus("Connect the left half first.");
+    return;
+  }
+  if (
+    state.dirty &&
+    !window.confirm("Load from the keyboard and discard editor changes, including any layers not on the board?")
+  ) {
+    return;
+  }
+  await state.studio.getKeymap();
+  const loaded = loadEditorFromKeyboard(state.studio, { replace: true });
+  const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
+  setStatus(
+    !loaded.ok
+      ? loaded.reason
+      : loaded.emptyDevice
+        ? `Showing the keyboard (${loaded.layers} layers). Some cells decoded empty. ${loaded.sample || ""}${dropped}`
+        : `Showing the keyboard: ${loaded.layers} layer(s).${dropped}`
+  );
+}
+
+function looksLikeZeroKey(text) {
+  return isPlaceholderBinding(text);
+}
+
+function fileBindingText(binding) {
+  if (binding?.start != null && binding?.end != null && state.original) {
+    return state.original.slice(binding.start, binding.end);
+  }
+  return "";
+}
+
+function displayBindingText(binding) {
+  return binding?.text ?? "";
+}
+
+function decodeStudioLayerBindings(studioLayer, behaviors, named) {
+  const count = keyCount();
+  const bindings = emptyLayerBindings(count);
+  const src = studioLayer.bindings || [];
+  let skipped = 0;
+  for (let i = 0; i < Math.min(count, src.length); i++) {
+    const decoded = cellsToBinding(src[i], behaviors, named);
+    const next = decoded.ok && !looksLikeZeroKey(decoded.text) ? decoded.text : "&none";
+    if (next === "&none") skipped++;
+    bindings[i].text = next;
+  }
+  return { bindings, skipped, slots: Math.min(count, src.length) };
+}
+
+function closeOpenEditors() {
+  if (state.combinationDraft) closeCombinationBuilder();
+  if (state.comboDraft) closeComboDialog();
+  if (state.macroDraft) closeMacroEditor();
+  if (state.behaviorDraft) closeBehaviorEditor();
+}
+
+function loadEditorFromKeyboard(client, opts = {}) {
+  const replace = opts.replace !== false;
+  const studioLayers = client.layers || [];
+  if (!studioLayers.length) return { ok: false, reason: "empty keymap on device" };
+  rememberDeviceLayers(client);
+  if (replace) state.flashNotice = null;
+  const prev = state.layers;
+  const named = studioLayers.map((l, i) => ({
+    id: l.id,
+    name: displayLayerName(studioLayerId(l, i, prev[i]?.id)),
+  }));
+  let skipped = 0;
+  let slots = 0;
+  let changed = 0;
+  const decodedLayers = studioLayers.map((sl, li) => {
+    const got = decodeStudioLayerBindings(sl, client.behaviors, named);
+    skipped += got.skipped;
+    slots += got.slots;
+    return {
+      id: studioLayerId(sl, li, prev[li]?.id),
+      bindings: got.bindings,
+      start: null,
+      end: null,
+    };
+  });
+  const sample = (studioLayers[0]?.bindings || []).slice(0, 6).map((c, i) => {
+    const d = cellsToBinding(c, client.behaviors, named);
+    return `P${i} id=${c?.behaviorId ?? "?"}/${c?.rawBehaviorId ?? "?"} p1=${c?.param1 ?? "?"} → ${d.text || d.reason}`;
+  });
+
+  let dropped = [];
+  if (replace) {
+    dropped = prev.slice(decodedLayers.length).map((l) => displayLayerName(l.id));
+    closeOpenEditors();
+    state.layers = decodedLayers;
+    state.layer = 0;
+    state.layerMenu = null;
+    state.layerRename = null;
+    state.selected.clear();
+    state.history.clear();
+    updateHistoryButtons();
+    changed = decodedLayers.reduce((n, l) => n + l.bindings.length, 0);
+  } else {
+    const n = Math.min(prev.length, decodedLayers.length);
+    for (let li = 0; li < n; li++) {
+      const dest = prev[li].bindings;
+      const src = decodedLayers[li].bindings;
+      for (let i = 0; i < Math.min(dest.length, src.length); i++) {
+        if (dest[i].text !== src[i].text) {
+          dest[i].text = src[i].text;
+          changed++;
+        }
+      }
+    }
+  }
+
+  state.source = "keyboard";
+  const vsFile = bindingsDifferFromFile();
+  state.dirty = replace ? false : vsFile || extraEditorLayers().length > 0;
+  setSync(state.dirty ? "unsaved-and-live" : "saved");
+  renderLayers();
+  renderKeyboard();
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+  renderInspect();
+  renderPalette();
+  updateChrome();
+  return {
+    ok: true,
+    changed,
+    skipped,
+    layers: decodedLayers.length,
+    dropped,
+    emptyDevice: !!(slots && skipped / slots > 0.4),
+    sample: sample.join(" · "),
+  };
+}
+
+function allFileBindings() {
+  const out = [];
+  for (let li = 0; li < state.layers.length; li++) {
+    for (let i = 0; i < state.layers[li].bindings.length; i++) {
+      out.push({ layer: li, index: i, text: state.layers[li].bindings[i].text });
+    }
+  }
+  return out;
+}
+
+function rememberDeviceLayers(client) {
+  const layers = client?.layers || state.studio?.layers || [];
+  state.deviceLayerCount = layers.length;
+}
+
+function layerOnDevice(index) {
+  return mapStudioLayerIndex(state.layers, state.studio?.layers || [], index) != null;
+}
+
+function studioLayerIndex(fileLayerIndex) {
+  return mapStudioLayerIndex(state.layers, state.studio?.layers || [], fileLayerIndex);
+}
+
+function extraEditorLayers() {
+  if (!state.studio?.layers?.length) return [];
+  return state.layers.filter((_, i) => !layerOnDevice(i)).map((l) => displayLayerName(l.id));
+}
+
+const FLASH_COPY = {
+  layer: {
+    title: (n) => (n ? `Added ${n}.` : "New layer."),
+    line: "New layers cannot be applied live.",
+    status: "New layer — download keymap and flash",
+  },
+  "layer-delete": {
+    title: (n) => (n ? `Deleted ${n}.` : "Layer removed."),
+    line: "Layer count is fixed at compile time.",
+    status: "Layer removed — download keymap and flash",
+  },
+  macro: {
+    title: (n) => (n ? `Saved &${String(n).replace(/^&/, "")}.` : "New macro."),
+    line: "New macros cannot be applied live.",
+    status: "New macro — download keymap and flash",
+  },
+  combo: {
+    title: (n) => (n ? `Saved ${n}.` : "New combo."),
+    line: "New combos cannot be applied live.",
+    status: "New combo — download keymap and flash",
+  },
+  behavior: {
+    title: (n) => (n ? `Saved &${String(n).replace(/^&/, "")}.` : "New behavior."),
+    line: "New behaviors cannot be applied live.",
+    status: "New behavior — download keymap and flash",
+  },
+  params: {
+    title: (n) => (n ? `Saved ${n}.` : "This change needs a flash."),
+    line: "This change cannot be applied live.",
+    status: "This change needs a flash",
+  },
+};
+
+const FLASH_FOOT = "Download the keymap, put it in your firmware repo, and flash.";
+
+function showFlashNeeded(kind, name, { created = true } = {}) {
+  const key = created ? kind : "params";
+  state.flashNotice = { kind: key, name, created };
+  updateFlashBanner();
+  const copy = FLASH_COPY[key] || FLASH_COPY.params;
+  setStatus(`${copy.title(name)} ${copy.status}.`);
+}
+
+function updateLayerOfflineBanner() {
+  updateFlashBanner();
+}
+
+function updateFlashBanner() {
+  const el = $("layer-offline");
+  const text = $("layer-offline-text");
+  const titleEl = $("flash-banner-title");
+  if (!el) return;
+  if (state.studio && !layerOnDevice(state.layer)) {
+    const name = displayLayerName(state.layers[state.layer]?.id);
+    if (titleEl) titleEl.textContent = `${name} is not on this keyboard.`;
+    if (text) {
+      text.textContent = `You can edit ${name} here, but Apply cannot add it over USB. The board has no ${name}, so those keys still type the base/transparent letter. ${FLASH_FOOT}`;
+    }
+    el.hidden = false;
+    return;
+  }
+  if (state.flashNotice) {
+    const copy = FLASH_COPY[state.flashNotice.kind] || FLASH_COPY.params;
+    if (titleEl) titleEl.textContent = copy.title(state.flashNotice.name);
+    if (text) text.textContent = `${copy.line} ${FLASH_FOOT}`;
+    el.hidden = false;
+    return;
+  }
+  el.hidden = true;
+}
+
+function queueLive(layer, index, text) {
+  if (!state.studio) return;
+  if (studioLayerIndex(layer) == null) {
+    const name = displayLayerName(state.layers[layer]?.id);
+    setStatus(`${name} is not on this keyboard. Apply cannot write it — download the keymap and flash firmware.`);
+    return;
+  }
+  liveQueue.push({ layer, index, text });
+  pumpLive();
+}
+
+async function pumpLive() {
+  if (liveBusy || !state.studio) return;
+  liveBusy = true;
+  while (liveQueue.length && state.studio) {
+    const job = liveQueue.shift();
+    try {
+      const mapped = studioLayerIndex(job.layer);
+      if (mapped == null) {
+        setStatus(`${displayLayerName(state.layers[job.layer]?.id)} is not on this keyboard.`);
+        continue;
+      }
+      const result = await state.studio.setBinding(mapped, job.index, job.text);
+      if (!result.ok) {
+        setStatus(`On board skipped P${job.index}: ${result.reason}`);
+        continue;
+      }
+      await state.studio.save();
+      warnLiveOnce();
+      if (state.dirty) setSync("unsaved-and-live");
+      setStatus(`On board: layer ${job.layer} P${job.index} → ${job.text}`);
+    } catch (err) {
+      setStatus(err.message);
+      setStudioLabel("Studio: error", "err");
+      break;
+    }
+  }
+  liveBusy = false;
+}
+
+function warnLiveOnce() {
+  if (state.liveWarned) return;
+  state.liveWarned = true;
+  setStudioLabel("Connected · settings written", "on");
+}
+
+async function connectOrDisconnect() {
+  if (state.studio) {
+    await state.studio.close();
+    state.studio = null;
+    state.deviceLayerCount = 0;
+    setStudioLabel("Not connected");
+    $("session").classList.remove("live");
+    updateStudioButtons();
+    renderLayers();
+    updateLayerOfflineBanner();
+    setStatus("Disconnected from keyboard.");
+    return;
+  }
+  setStudioLabel("Connecting…");
+  try {
+    const client = await connectStudio();
+    state.studio = client;
+    rememberDeviceLayers(client);
+    $("kb-name").textContent = client.deviceName || state.profile?.name || "Keyboard";
+    setStudioLabel("Connected", "on");
+    $("session").classList.add("live");
+    updateStudioButtons();
+    if (state.dirty) {
+      const discard = window.confirm(
+        "Load from the keyboard and discard editor changes, including any layers not on the board?"
+      );
+      if (!discard) {
+        updateChrome();
+        setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply to keyboard to push them.`);
+        return;
+      }
+    }
+    const loaded = loadEditorFromKeyboard(client, { replace: true });
+    if (!loaded.ok) {
+      setStatus(`Connected, but keyboard decode failed: ${loaded.reason}`);
+      return;
+    }
+    const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
+    if (loaded.emptyDevice) {
+      setStatus(
+        `Showing the keyboard (${loaded.layers} layers). Some cells decoded empty. ${loaded.sample || ""}${dropped}`
+      );
+    } else {
+      setStatus(`Showing the keyboard: ${loaded.layers} layer(s).${dropped}`);
+    }
+  } catch (err) {
+    if (err?.name === "NotFoundError") {
+      setStudioLabel("Not connected");
+      setStatus("Connect cancelled.");
+      return;
+    }
+    setStudioLabel("Connect failed", "err");
+    setStatus(err.message);
+  }
+}
+
+async function applyLiveAll() {
+  if (!state.studio) {
+    setStatus("Connect the left half first.");
+    return;
+  }
+  const extra = extraEditorLayers();
+  const prompt = extra.length
+    ? `Write the existing firmware layers onto the keyboard?\n\n${extra.join(", ")} cannot be sent over USB (not in this firmware). Download the keymap and flash to add ${extra.length === 1 ? "it" : "them"}.`
+    : "Write the current editor bindings onto the connected keyboard?";
+  if (state.settings.confirmApply || extra.length) {
+    if (!window.confirm(prompt)) {
+      setStatus("Apply cancelled.");
+      return;
+    }
+  }
+  const jobs = allFileBindings();
+  setStatus("Applying file keymap to the board…");
+  let ok = 0;
+  const skipped = [];
+  let extraKeys = 0;
+  for (const job of jobs) {
+    const mapped = studioLayerIndex(job.layer);
+    if (mapped == null) {
+      extraKeys++;
+      continue;
+    }
+    const preview = bindingToCells(job.text, state.studio.behaviors, state.studio.layers);
+    if (!preview.ok) {
+      skipped.push(`P${job.index} (${preview.reason})`);
+      continue;
+    }
+    const result = await state.studio.setBinding(mapped, job.index, job.text);
+    if (!result.ok) skipped.push(`P${job.index} (${result.reason})`);
+    else ok++;
+  }
+  if (ok) {
+    await state.studio.save();
+    warnLiveOnce();
+    await state.studio.getKeymap();
+    loadEditorFromKeyboard(state.studio, { replace: false });
+  }
+  setStatus(
+    `Wrote ${ok} keys from this file onto the board.` +
+      (skipped.length ? ` Skipped ${skipped.length}: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? "…" : ""}` : "") +
+      (extraKeys
+        ? ` Left ${extraKeys} key(s) on ${extra.join(", ")} in the editor — Apply cannot add a new layer over USB. Download keymap and flash.`
+        : "")
+  );
+}
+
+function downloadText(name, text, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function loadPickedKeymapFile(file) {
+  if (!file) return;
+  await ensureLayout();
+  loadKeymapText(await file.text(), file.name);
+}
+
+function saveKeymap() {
+  const withKeys = applyLayers(state.original, state.layers, { rows: state.profile?.rows });
+  const withCombos = applyCombos(withKeys, state.combos, state.comboInsertAt);
+  const withBeh = applyBehaviors(withCombos, state.behaviors, state.behaviorInsertAt);
+  const text = applyMacros(withBeh, state.macros, state.macroInsertAt);
+  downloadText(state.keymapPath, text);
+  setDirty(false);
+  setStatus(`Downloaded ${state.keymapPath}. Replace the keymap in your firmware repo, then flash. Combos, macros, and new behaviors are not live.`);
+}
+
+function svgMarkup() {
+  return buildKeymapSvg(state.keys, state.layers, {
+    ...state,
+    homeRowBehaviors: state.profile?.homeRowBehaviors || [],
+    showColors: state.settings.showColors,
+    showPositions: state.settings.showPositions,
+  });
+}
+
+async function loadText(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  return res.text();
+}
+
+function loadKeymapText(text, name = "keymap.keymap", origin = "file") {
+  const n = keyCount();
+  if (!n) throw new Error("Load a keyboard layout first.");
+  const parsed = parseKeymap(text, n);
+  if (parsed.layers.length === 0) {
+    throw new Error(`No layer with exactly ${n} bindings found.`);
+  }
+  state.original = text;
+  state.keymapPath = name;
+  state.sourceLabel = name;
+  state.layers = parsed.layers;
+  state.combos = parsed.combos || [];
+  state.comboInsertAt = parsed.comboInsertAt ?? -1;
+  state.behaviors = parsed.behaviors || [];
+  state.behaviorInsertAt = parsed.behaviorInsertAt ?? -1;
+  state.macros = parsed.macros || [];
+  state.macroInsertAt = parsed.macroInsertAt ?? -1;
+  closeOpenEditors();
+  state.layer = 0;
+  state.layerMenu = null;
+  state.layerRename = null;
+  state.flashNotice = null;
+  state.selected.clear();
+  state.history.clear();
+  updateHistoryButtons();
+  state.source = origin === "github" ? "github" : "file";
+  setDirty(false);
+  renderLayers();
+  renderKeyboard();
+  renderBehaviors();
+  renderMacros();
+  renderCombos();
+  renderInspect();
+  renderPalette();
+  const liveHint = state.studio
+    ? " Apply live to write this file onto the keyboard."
+    : "";
+  setStatus(
+    `Loaded ${name}: ${parsed.layers.length} layers, ${state.macros.length} macros, ${state.behaviors.length} behaviors, ${state.combos.length} combos.${liveHint}`
+  );
+}
+
+function fillRepoDiscoverSelects(picked, preferredKeymap) {
+  const km = $("repo-keymap");
+  const ly = $("repo-layout");
+  if (!km || !ly) return;
+  km.replaceChildren();
+  ly.replaceChildren();
+  for (const item of picked.keymaps) {
+    const opt = document.createElement("option");
+    opt.value = item.path;
+    opt.textContent = item.path;
+    km.appendChild(opt);
+  }
+  if (preferredKeymap && [...km.options].some((o) => o.value === preferredKeymap)) km.value = preferredKeymap;
+  else if (picked.keymap) km.value = picked.keymap.path;
+
+  const seenBuiltin = new Set();
+  if (picked.builtin) {
+    const opt = document.createElement("option");
+    opt.value = `builtin:${picked.builtin.id}`;
+    opt.textContent = `${picked.builtin.name} (built-in)`;
+    ly.appendChild(opt);
+    seenBuiltin.add(picked.builtin.id);
+  }
+  for (const item of picked.layouts) {
+    const json = String(item.kind || "").includes("json");
+    const opt = document.createElement("option");
+    opt.value = `${json ? "json" : "dtsi"}:${item.path}`;
+    opt.textContent = json ? item.path : `${item.path} (parse .dtsi)`;
+    ly.appendChild(opt);
+  }
+  for (const p of PROFILE_INDEX) {
+    if (seenBuiltin.has(p.id)) continue;
+    const opt = document.createElement("option");
+    opt.value = `builtin:${p.id}`;
+    opt.textContent = `${p.name} (built-in)`;
+    ly.appendChild(opt);
+    seenBuiltin.add(p.id);
+  }
+  if (picked.layout?.source === "builtin") ly.value = `builtin:${picked.layout.id}`;
+  else if (picked.layout?.path) {
+    const prefix = picked.layout.source === "json" ? "json" : "dtsi";
+    const want = `${prefix}:${picked.layout.path}`;
+    if ([...ly.options].some((o) => o.value === want)) ly.value = want;
+  } else {
+    const ask = document.createElement("option");
+    ask.value = "";
+    ask.textContent = "Which layout should I use?";
+    ly.insertBefore(ask, ly.firstChild);
+    ly.value = "";
+  }
+  updateRepoDiscoverSummary();
+}
+
+function updateRepoDiscoverSummary() {
+  const el = $("repo-discover-summary");
+  if (!el) return;
+  const km = $("repo-keymap")?.value || "(none)";
+  const ly = $("repo-layout");
+  const layoutLabel = ly?.value ? ly.selectedOptions?.[0]?.textContent : "(none — pick a layout)";
+  el.textContent = `Found:\n  Keymap:  ${km}\n  Layout:  ${layoutLabel}`;
+}
+
+function closeRepoDiscover() {
+  const el = $("repo-discover");
+  if (el) el.hidden = true;
+  const pickers = $("repo-discover-pickers");
+  if (pickers) pickers.hidden = true;
+  state.repoDiscover = null;
+}
+
+function showRepoDiscoverPickers() {
+  const pickers = $("repo-discover-pickers");
+  if (pickers) pickers.hidden = false;
+  const pick = $("repo-discover-pick");
+  if (pick) pick.hidden = true;
+}
+
+function openRepoDiscover(disc, picked) {
+  state.repoDiscover = { ...disc, picked };
+  const title = $("repo-discover-title");
+  const where = $("repo-discover-repo");
+  if (title) title.textContent = "Found in repo";
+  if (where) where.textContent = disc.label || "";
+  fillRepoDiscoverSelects(picked, disc.preferredKeymap || "");
+  const needsPick = !picked.auto || !picked.layout;
+  const pickers = $("repo-discover-pickers");
+  if (pickers) pickers.hidden = !needsPick;
+  const pick = $("repo-discover-pick");
+  if (pick) pick.hidden = needsPick;
+  $("repo-discover").hidden = false;
+}
+
+function applyProfileObject(profile, opts = {}) {
+  state.profile = profile;
+  state.keys = profile.keys;
+  if (opts.imported) state.importedProfile = profile;
+  if (opts.persist !== false && PROFILE_INDEX.some((p) => p.id === profile.id)) {
+    localStorage.setItem("zmkmap-layout", profile.id);
+  }
+  fillLayoutSelect();
+  updateKeyboardName();
+  renderKeyboard();
+}
+
+async function readDiscoveredFile(path) {
+  const disc = state.repoDiscover;
+  if (!disc) throw new Error("Nothing to load.");
+  if (disc.origin === "github") {
+    const { owner, repo, branch } = disc.ref;
+    return githubRawFile(owner, repo, branch, path);
+  }
+  if (disc.origin === "local") {
+    return readLocalFile(disc.root, path);
+  }
+  const file = disc.files?.[path];
+  if (!file) throw new Error(`Missing ${path}`);
+  return file.text();
+}
+
+async function applyDiscoveredRepo() {
+  const disc = state.repoDiscover;
+  if (!disc) return;
+  const kmPath = $("repo-keymap")?.value;
+  const lyVal = $("repo-layout")?.value || "";
+  if (!kmPath) throw new Error("Pick a keymap file.");
+  if (!lyVal) throw new Error("Which layout should I use? Pick a built-in keyboard or a layout file.");
+  setStatus(`Loading ${kmPath}…`);
+  const [kind, ...rest] = lyVal.split(":");
+  const lyPath = rest.join(":");
+  if (kind === "builtin") {
+    state.importedProfile = null;
+    await applyProfileId(lyPath);
+  } else if (kind === "json") {
+    const json = JSON.parse(await readDiscoveredFile(lyPath));
+    applyProfileObject(normalizeProfile(json), { imported: true, persist: false });
+  } else {
+    const dtsi = await readDiscoveredFile(lyPath);
+    const name = `${disc.shortName || "repo"} (${lyPath.split("/").pop()})`;
+    applyProfileObject(profileFromDtsi(dtsi, { id: `repo-${disc.shortName || "import"}`, name }), {
+      imported: true,
+      persist: false,
+    });
+  }
+  const text = await readDiscoveredFile(kmPath);
+  if (disc.origin === "github") {
+    const { owner, repo, branch } = disc.ref;
+    state.githubRef = { owner, repo, branch, path: kmPath };
+    localStorage.setItem("zmkmap-github", `${owner}/${repo}`);
+    loadKeymapText(text, `${owner}/${repo}/${kmPath}`, "github");
+  } else {
+    state.githubRef = null;
+    loadKeymapText(text, kmPath, "file");
+  }
+  closeRepoDiscover();
+}
+
+async function loadFromLocalPath(path) {
+  setStatus(`Scanning ${path}…`);
+  let listed;
+  try {
+    listed = await listLocalFiles(path);
+  } catch (err) {
+    if (err.code === "local-scan-unavailable") {
+      setStatus("Drop the repo folder onto this window, or paste a GitHub owner/repo. Local paths need python3 apps/web/serve.py.");
+      return;
+    }
+    throw err;
+  }
+  const picked = pickDiscovery(listed.paths, {
+    repoName: listed.root,
+    builtins: PROFILE_INDEX,
+  });
+  if (!picked.keymaps.length) throw new Error(`No .keymap files found in ${listed.root}.`);
+  const norm = String(path).replace(/\\/g, "/");
+  const preferred =
+    picked.keymaps.find((k) => norm.endsWith(`/${k.path}`) || norm.endsWith(k.path))?.path || "";
+  openRepoDiscover(
+    {
+      origin: "local",
+      root: listed.root,
+      label: listed.root,
+      shortName: listed.root.split("/").filter(Boolean).pop() || "local",
+      preferredKeymap: preferred,
+    },
+    picked
+  );
+  setStatus(`Found ${picked.keymaps.length} keymap(s) in ${listed.root}. Confirm the files to load.`);
+}
+
+async function loadFromGitHub() {
+  const saved = localStorage.getItem("zmkmap-github") || "rleyvasal/totem-zmk-config";
+  const input = window.prompt("GitHub repo or local path", saved);
+  if (!input) return;
+  const ref = parseGithubInput(input);
+  if (ref?.local) {
+    await loadFromLocalPath(ref.local);
+    return;
+  }
+  if (!ref) {
+    setStatus("Need owner/repo (e.g. rleyvasal/totem-zmk-config) or a local folder path.");
+    return;
+  }
+  setStatus(`Scanning ${ref.owner}/${ref.repo}…`);
+  const listed = await listGithubFiles(ref.owner, ref.repo, ref.branch);
+  ref.branch = listed.branch;
+  const picked = pickDiscovery(listed.paths, {
+    repoName: `${ref.owner}/${ref.repo}`,
+    builtins: PROFILE_INDEX,
+  });
+  if (!picked.keymaps.length) throw new Error(`No .keymap files found in ${ref.owner}/${ref.repo}.`);
+  openRepoDiscover(
+    {
+      origin: "github",
+      ref,
+      label: `${ref.owner}/${ref.repo}@${ref.branch}`,
+      shortName: ref.repo,
+      preferredKeymap: ref.path?.endsWith(".keymap") ? ref.path : "",
+    },
+    picked
+  );
+  setStatus(`Found ${picked.keymaps.length} keymap(s) in ${ref.owner}/${ref.repo}. Confirm the files to load.`);
+}
+
+function collectDroppedFiles(dt) {
+  const items = [...(dt.items || [])];
+  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.length) {
+    return Promise.resolve([...dt.files].map((file) => ({ path: file.name, file })));
+  }
+  const out = [];
+  const walk = (entry, prefix) =>
+    new Promise((resolve, reject) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isFile) {
+        entry.file((file) => {
+          out.push({ path, file });
+          resolve();
+        }, reject);
+        return;
+      }
+      if (!entry.isDirectory) {
+        resolve();
+        return;
+      }
+      const reader = entry.createReader();
+      const batches = [];
+      const readBatch = () => {
+        reader.readEntries((chunk) => {
+          if (!chunk.length) {
+            Promise.all(batches).then(() => resolve()).catch(reject);
+            return;
+          }
+          batches.push(Promise.all(chunk.map((child) => walk(child, path))));
+          readBatch();
+        }, reject);
+      };
+      readBatch();
+    });
+  return Promise.all(entries.map((entry) => walk(entry, ""))).then(() => out);
+}
+
+async function loadDroppedRepo(dt) {
+  const files = await collectDroppedFiles(dt);
+  if (!files.length) return;
+  const paths = files.map((f) => f.path);
+  const picked = pickDiscovery(paths, {
+    repoName: files.map((f) => f.path).join(" "),
+    builtins: PROFILE_INDEX,
+  });
+  const onlyKeymap = files.length === 1 && picked.keymaps.length === 1 && !picked.layouts.length;
+  if (onlyKeymap) {
+    await loadPickedKeymapFile(files[0].file);
+    return;
+  }
+  if (!picked.keymaps.length) {
+    await loadPickedKeymapFile(files[0].file);
+    return;
+  }
+  const fileMap = Object.fromEntries(files.map((f) => [f.path, f.file]));
+  const top = files[0].path.split("/")[0] || "dropped";
+  openRepoDiscover(
+    {
+      origin: "drop",
+      files: fileMap,
+      label: `Dropped ${files.length} files`,
+      shortName: top,
+      preferredKeymap: picked.keymap?.path || "",
+    },
+    picked
+  );
+  setStatus(`Found ${picked.keymaps.length} keymap(s) in the dropped files. Confirm the files to load.`);
+}
+
+async function loadFromKeyboard() {
+  if (!state.studio) {
+    await connectOrDisconnect();
+    return;
+  }
+  await refreshFromKeyboard();
+}
+
+function sampleKeymapUrl() {
+  const path = state.profile?.sampleKeymap;
+  return path ? `../../${path}` : null;
+}
+
+function currentProfileId() {
+  return $("layout-profile")?.value || localStorage.getItem("zmkmap-layout") || "totem";
+}
+
+function fillLayoutSelect() {
+  const sel = $("layout-profile");
+  if (!sel) return;
+  const current = state.profile?.id || currentProfileId();
+  sel.replaceChildren();
+  if (state.importedProfile && !PROFILE_INDEX.some((p) => p.id === state.importedProfile.id)) {
+    const opt = document.createElement("option");
+    opt.value = state.importedProfile.id;
+    opt.textContent = state.importedProfile.name;
+    if (state.importedProfile.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  for (const p of PROFILE_INDEX) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    if (p.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function updateKeyboardName() {
+  const el = $("kb-name");
+  if (el) el.textContent = state.profile?.name || "Keyboard";
+}
+
+async function applyProfileId(id) {
+  if (state.importedProfile && state.importedProfile.id === id) {
+    applyProfileObject(state.importedProfile, { persist: false });
+    return;
+  }
+  const entry = PROFILE_INDEX.find((p) => p.id === id) || PROFILE_INDEX[0];
+  const profile = await loadProfile(entry.url);
+  applyProfileObject(profile);
+}
+
+async function ensureLayout() {
+  if (state.profile && state.keys.length === keyCount()) return;
+  await applyProfileId(currentProfileId());
+}
+
+async function loadSample() {
+  if (!state.profile) await applyProfileId(currentProfileId());
+  const url = sampleKeymapUrl();
+  if (!url) throw new Error("This layout has no sample keymap.");
+  loadKeymapText(await loadText(url), url.split("/").pop());
+}
+
+async function switchProfile(id) {
+  if (state.dirty && !confirm("Switch layout and discard unsaved keymap edits?")) {
+    fillLayoutSelect();
+    return;
+  }
+  await applyProfileId(id);
+  try {
+    await loadSample();
+  } catch (err) {
+    setStatus(err.message);
+    renderKeyboard();
+  }
+}
+
+function darkReaderActive() {
+  const root = document.documentElement;
+  return !!(
+    root.dataset.darkreaderMode ||
+    root.dataset.darkreaderScheme ||
+    document.querySelector("style.darkreader, style[class*='darkreader']")
+  );
+}
+
+function maybeWarnDarkReader() {
+  const el = $("theme-notice");
+  if (!el) return;
+  if (sessionStorage.getItem("zmkmap-hide-theme-notice")) return;
+  const show = () => {
+    if (darkReaderActive()) el.hidden = false;
+  };
+  show();
+  setTimeout(show, 400);
+  $("theme-notice-x")?.addEventListener("click", () => {
+    el.hidden = true;
+    sessionStorage.setItem("zmkmap-hide-theme-notice", "1");
+  });
+}
+
+function boot() {
+  try {
+    maybeWarnDarkReader();
+    fillCategorySelect();
+    $("category").addEventListener("change", (ev) => {
+      state.category = ev.target.value;
+      $("search").value = "";
+      renderPalette();
+    });
+    $("search").addEventListener("input", renderPalette);
+    $("studio-connect")?.addEventListener("click", () => {
+      connectOrDisconnect().catch((err) => setStatus(err.message));
+    });
+    $("load-keyboard")?.addEventListener("click", () => {
+      loadFromKeyboard().catch((err) => setStatus(err.message));
+    });
+    $("load-github")?.addEventListener("click", () => {
+      loadFromGitHub().catch((err) => setStatus(err.message));
+    });
+    $("repo-discover-use")?.addEventListener("click", () => {
+      applyDiscoveredRepo().catch((err) => setStatus(err.message));
+    });
+    $("repo-discover-cancel")?.addEventListener("click", closeRepoDiscover);
+    $("repo-discover-x")?.addEventListener("click", closeRepoDiscover);
+    $("repo-discover-pick")?.addEventListener("click", showRepoDiscoverPickers);
+    $("repo-keymap")?.addEventListener("change", updateRepoDiscoverSummary);
+    $("repo-layout")?.addEventListener("change", updateRepoDiscoverSummary);
+    $("repo-discover")?.addEventListener("click", (ev) => {
+      if (ev.target.id === "repo-discover") closeRepoDiscover();
+    });
+    $("studio-apply")?.addEventListener("click", () => {
+      applyLiveAll().catch((err) => setStatus(err.message));
+    });
+    $("combo-new")?.addEventListener("click", () => openCombinationBuilder(null));
+    document.querySelectorAll("[data-builder-step]").forEach((el) => {
+      el.addEventListener("click", () => setBuilderStep(el.dataset.builderStep));
+    });
+    $("combo-filters")?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-filter]");
+      if (!btn) return;
+      state.combinationFilter = btn.dataset.filter;
+      $("combo-filters").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+      renderCombinations();
+    });
+    $("builder-form")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      saveCombinationBuilder();
+    });
+    $("builder-cancel")?.addEventListener("click", closeCombinationBuilder);
+    $("builder-x")?.addEventListener("click", closeCombinationBuilder);
+    $("builder-delete")?.addEventListener("click", deleteCurrentCombination);
+    $("builder-advanced")?.addEventListener("change", () => {
+      if (state.combinationDraft) state.combinationDraft.advanced = $("builder-advanced").checked;
+      renderBuilder();
+    });
+    $("builder-binding")?.addEventListener("input", () => {
+      const draft = state.combinationDraft;
+      if (!draft || draft.source?.item?.guarded) return;
+      const binding = $("builder-binding").value.trim();
+      if (!binding || isBrokenComboBinding(binding)) {
+        draft.outputs = [];
+      } else {
+        draft.outputs = [{ binding: asBinding(binding), mode: defaultModeForBinding(binding) }];
+      }
+      draft.stepsDirty = false;
+      syncBuilderSteps();
+      if ($("builder-def")) $("builder-def").textContent = formatBuilderDefinition(draft);
+    });
+    $("builder-timeout")?.addEventListener("input", () => {
+      if (state.combinationDraft) state.combinationDraft.timeout = Number($("builder-timeout").value) || state.combinationDraft.timeout;
+      if (state.combinationDraft && $("builder-def")) {
+        $("builder-def").textContent = formatBuilderDefinition(state.combinationDraft);
+      }
+    });
+    $("builder-layers")?.addEventListener("input", () => {
+      if (state.combinationDraft) state.combinationDraft.layers = $("builder-layers").value;
+      if (state.combinationDraft && $("builder-def")) {
+        $("builder-def").textContent = formatBuilderDefinition(state.combinationDraft);
+      }
+    });
+    $("builder-hold-cats")?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-hold-cat]");
+      if (!btn || !state.combinationDraft) return;
+      state.combinationDraft.holdCat = btn.dataset.holdCat;
+      renderBuilder();
+    });
+    document.querySelectorAll("input[name=hrm-mode]").forEach((el) => {
+      el.addEventListener("change", () => {
+        if (!state.combinationDraft) return;
+        state.combinationDraft.hrmMode = el.value;
+        if (el.value === "single" && state.combinationDraft.triggers.length > 1) {
+          state.combinationDraft.triggers = state.combinationDraft.triggers.slice(0, 1);
+          state.selected = new Set(state.combinationDraft.triggers.map((t) => t.index));
+        }
+        syncSetKeys();
+        renderBuilder();
+        renderKeyboard();
+      });
+    });
+    $("builder-conflict-cancel")?.addEventListener("click", () => {
+      if ($("builder-conflict")) $("builder-conflict").hidden = true;
+    });
+    $("builder-conflict-replace")?.addEventListener("click", () => {
+      if ($("builder-conflict")) $("builder-conflict").hidden = true;
+      if (state.combinationDraft) {
+        state.combinationDraft.replaceOk = true;
+        saveCombinationBuilder();
+      }
+    });
+    document.querySelectorAll("[data-builder-add]").forEach((btn) => {
+      btn.addEventListener("click", () => addBuilderStep(btn.dataset.builderAdd));
+    });
+    $("combo-add")?.addEventListener("click", () => openComboDialog(null));
+    $("combo-form")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      saveComboDialog();
+    });
+    $("combo-cancel")?.addEventListener("click", () => closeComboDialog());
+    $("combo-delete")?.addEventListener("click", () => {
+      if (state.comboDraft?.source) deleteCombo(state.comboDraft.source);
+    });
+    $("combo-binding")?.addEventListener("input", updateComboDialogView);
+    $("macro-add")?.addEventListener("click", () => openMacroEditor(null));
+    $("macro-form")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      saveMacroEditor();
+    });
+    $("macro-cancel").addEventListener("click", () => closeMacroEditor());
+    $("macro-delete").addEventListener("click", () => {
+      if (state.macroDraft?.source) deleteMacro(state.macroDraft.source);
+    });
+    document.querySelectorAll("[data-macro-add]").forEach((btn) => {
+      btn.addEventListener("click", () => addMacroStep(btn.dataset.macroAdd));
+    });
+    $("behavior-add")?.addEventListener("click", () => openBehaviorEditor(null));
+    $("behavior-type").addEventListener("change", () => {
+      syncBehaviorTypeUI();
+      $("combo-pick-hint").textContent =
+        currentBehaviorKind() === "hold-tap"
+          ? holdAssignHint()
+          : "Click a key on the board to bind this behavior there.";
+    });
+    $("behavior-form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      saveBehaviorEditor();
+    });
+    $("behavior-cancel").addEventListener("click", () => closeBehaviorEditor());
+    $("behavior-delete").addEventListener("click", () => {
+      if (state.behaviorDraft?.source) deleteBehavior(state.behaviorDraft.source);
+    });
+    $("behavior-mode").addEventListener("change", () => {
+      if (!state.behaviorDraft) return;
+      if (behaviorClickMode() === "mods") {
+        $("combo-pick-hint").textContent = "Click a home-row key, then set Ctrl / Shift / Alt / GUI for that finger.";
+        state.selected = new Set(
+          state.behaviorDraft.assignments.filter((a) => !a.removed && a.layer === state.layer).map((a) => a.index)
+        );
+      } else {
+        $("combo-pick-hint").textContent = "Click opposite-hand keys that may complete the hold.";
+        state.selected = new Set(state.behaviorDraft.triggerPositions);
+      }
+      updateBehaviorView();
+      renderKeyboard();
+    });
+    $("behavior-all-layers").addEventListener("change", () => updateBehaviorView());
+    fillHoldSelects();
+    $("behavior-place").addEventListener("click", () => {
+      if (!state.behaviorDraft) return;
+      state.behaviorDraft.placing = !state.behaviorDraft.placing;
+      $("behavior-place").closest(".add-row")?.classList.toggle("placing", state.behaviorDraft.placing);
+      const hold = $("behavior-add-hold").value;
+      $("behavior-add-tap").value = "";
+      $("behavior-place-hint").textContent = state.behaviorDraft.placing
+        ? `Click the key on the board. Hold will be ${hold}; tap comes from that key.`
+        : "Choose hold, then Place on key and click the key on the board.";
+      $("combo-pick-hint").textContent = state.behaviorDraft.placing
+        ? `Click the key that should hold ${hold}. The tap letter fills in from that key.`
+        : holdAssignHint();
+    });
+    $("download").addEventListener("click", saveKeymap);
+    $("layer-offline-download")?.addEventListener("click", saveKeymap);
+    $("svg").addEventListener("click", () => downloadText("zmkmap.svg", svgMarkup(), "image/svg+xml"));
+    $("undo").addEventListener("click", () => undoBindings());
+    $("redo").addEventListener("click", () => redoBindings());
+    $("refresh-kb")?.addEventListener("click", () => {
+      refreshFromKeyboard().catch((err) => setStatus(err.message));
+    });
+    $("reload")?.addEventListener("click", () => {
+      loadSample().catch((err) => setStatus(err.message));
+    });
+    $("layout-profile")?.addEventListener("change", (ev) => {
+      switchProfile(ev.target.value).catch((err) => setStatus(err.message));
+    });
+    $("open-file")?.addEventListener("change", async (ev) => {
+      const file = ev.target.files?.[0];
+      ev.target.value = "";
+      if (!file) return;
+      try {
+        await loadPickedKeymapFile(file);
+      } catch (err) {
+        setStatus(err.message);
+      }
+    });
+    document.querySelector(".file-btn")?.addEventListener("click", () => {
+      let opened = false;
+      const markOpen = () => {
+        opened = true;
+      };
+      window.addEventListener("blur", markOpen, { once: true });
+      $("open-file")?.addEventListener("cancel", markOpen, { once: true });
+      window.setTimeout(() => {
+        window.removeEventListener("blur", markOpen);
+        if (!opened && document.hasFocus()) {
+          setStatus(
+            "File picker blocked by browser. Try Chrome/Firefox or check Helium settings. You can also drop a .keymap onto this window."
+          );
+        }
+      }, 800);
+    });
+    window.addEventListener("dragover", (ev) => {
+      if (![...ev.dataTransfer.types].includes("Files")) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("drop", async (ev) => {
+      if (![...ev.dataTransfer.types].includes("Files")) return;
+      ev.preventDefault();
+      try {
+        await loadDroppedRepo(ev.dataTransfer);
+      } catch (err) {
+        setStatus(err.message);
+      }
+    });
+    const serialHint = "Web Serial. Pick the silent ZMK Studio RPC port, not printk. Close zmk.studio first.";
+    if ($("studio-connect")) $("studio-connect").title = serialHint;
+    if ($("load-keyboard")) $("load-keyboard").title = serialHint;
+    if (!("serial" in navigator)) {
+      if ($("studio-connect")) $("studio-connect").hidden = true;
+      if ($("load-keyboard")) $("load-keyboard").disabled = true;
+      if ($("studio-apply")) $("studio-apply").disabled = true;
+      if ($("studio-state")) $("studio-state").textContent = "Web Serial not available in this browser";
+    }
+    $("settings-open")?.addEventListener("click", openSettings);
+    $("settings-close")?.addEventListener("click", closeSettings);
+    $("settings")?.addEventListener("click", (ev) => {
+      if (ev.target.id === "settings") closeSettings();
+    });
+    $("settings-form")?.addEventListener("change", () => {
+      commitSettings({
+        os: $("set-os").value,
+        emptyBinding: $("set-empty").value,
+        showPositions: $("set-positions").checked,
+        showColors: $("set-colors").checked,
+        tappingTerm: $("set-tapping").value,
+        comboTimeout: $("set-combo-timeout").value,
+        confirmApply: $("set-confirm-apply").checked,
+      });
+    });
+    applySettingsToUi();
+    document.addEventListener("pointerdown", (ev) => {
+      if (state.drag) return;
+      if (!document.querySelector(".ghost")) return;
+      if (ev.target.closest?.("[data-zmk-ghost]")) return;
+      clearDragGhosts();
+    });
+    window.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") clearTransientUi();
+      if (ev.key === "Escape" && $("repo-discover") && !$("repo-discover").hidden) {
+        ev.preventDefault();
+        closeRepoDiscover();
+        return;
+      }
+      if (ev.key === "Escape" && $("settings") && !$("settings").hidden) {
+        ev.preventDefault();
+        closeSettings();
+        return;
+      }
+      if (ev.key === "Escape" && $("builder-conflict") && !$("builder-conflict").hidden) {
+        ev.preventDefault();
+        $("builder-conflict").hidden = true;
+        return;
+      }
+      if (ev.key === "Escape" && state.combinationDraft) {
+        ev.preventDefault();
+        closeCombinationBuilder();
+        return;
+      }
+      if (typingInField(ev.target)) return;
+      if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && ev.key.toLowerCase() === "n") {
+        ev.preventDefault();
+        createLayer(state.layers.length - 1);
+        return;
+      }
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "y" && !ev.shiftKey) {
+        ev.preventDefault();
+        redoBindings();
+        return;
+      }
+      if (!(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== "z") return;
+      ev.preventDefault();
+      if (ev.shiftKey) redoBindings();
+      else undoBindings();
+    });
+    document.addEventListener("click", () => {
+      if (state.layerMenu == null) return;
+      state.layerMenu = null;
+      renderLayers();
+    });
+    bindBoardDeselect();
+    updateStudioButtons();
+    updateHistoryButtons();
+    fillLayoutSelect();
+    renderPalette();
+    renderLegend();
+    applyProfileId(currentProfileId())
+      .then(() => loadSample())
+      .catch((err) => {
+        setStatus(`${err.message} Serve from the repo root: python3 apps/web/serve.py`);
+      });
+  } catch (err) {
+    setStatus(`Editor failed to start: ${err.message}`);
+    console.error(err);
+  }
+}
+
+boot();

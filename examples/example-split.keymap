@@ -1,0 +1,14 @@
+#define BASE 0
+
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+
+        base_layer {
+            bindings = <
+                &kp Q    &kp W    &kp E
+                &kp A    &kp S    &kp D
+            >;
+        };
+    };
+};

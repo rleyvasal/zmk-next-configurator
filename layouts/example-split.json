@@ -1,0 +1,17 @@
+{
+  "id": "example-split",
+  "name": "Example split (6)",
+  "keyCount": 6,
+  "split": true,
+  "rows": [3, 3],
+  "homeRowBehaviors": [],
+  "sampleKeymap": "examples/example-split.keymap",
+  "keys": [
+    { "w": 100, "h": 100, "x": 0, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "left" },
+    { "w": 100, "h": 100, "x": 110, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "left" },
+    { "w": 100, "h": 100, "x": 220, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "left" },
+    { "w": 100, "h": 100, "x": 400, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "right" },
+    { "w": 100, "h": 100, "x": 510, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "right" },
+    { "w": 100, "h": 100, "x": 620, "y": 0, "r": 0, "rx": 0, "ry": 0, "hand": "right" }
+  ]
+}

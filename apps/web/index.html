@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="darkreader-lock" />
+    <title>ZMK Map</title>
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=40" />
+  </head>
+  <body>
+    <div id="theme-notice" class="theme-notice" hidden>
+      <span>A dark-mode extension is rewriting colors. Disable it on this site for the intended look.</span>
+      <button type="button" id="theme-notice-x" aria-label="Dismiss">×</button>
+    </div>
+    <header class="app-header">
+      <div class="header-main">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M7 6h18l-11 10h11L7 26" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          </span>
+          <h1>ZMK Map</h1>
+        </div>
+        <div class="header-sources">
+          <button type="button" id="load-keyboard" class="src-btn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 11h.01M10 11h4M18 11h.01M8 15h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            Load from Keyboard
+          </button>
+          <label class="src-btn file-btn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+            Load from File
+            <input id="open-file" type="file" accept=".keymap,.dtsi,.txt" hidden />
+          </label>
+          <button type="button" id="load-github" class="src-btn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.7.11 2.5.33 1.9-1.29 2.74-1.02 2.74-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+            Load from GitHub
+          </button>
+          <button type="button" id="studio-apply" class="apply-top" disabled>Apply to keyboard</button>
+        </div>
+        <div class="header-secondary">
+          <button type="button" id="download" class="sec-btn">Download</button>
+          <button type="button" id="svg" class="sec-btn">SVG</button>
+          <button type="button" id="undo" class="hist-btn" title="Undo" disabled>↶</button>
+          <button type="button" id="redo" class="hist-btn" title="Redo" disabled>↷</button>
+          <button type="button" id="settings-open" class="sec-btn settings-btn" title="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M19.4 13a7.6 7.6 0 0 0 .1-2l2-1.5-2-3.5-2.4 1a7.7 7.7 0 0 0-1.7-1L15 4h-4l-.4 2a7.7 7.7 0 0 0-1.7 1l-2.4-1-2 3.5L6.5 11a7.6 7.6 0 0 0 .1 2l-2 1.5 2 3.5 2.4-1a7.7 7.7 0 0 0 1.7 1l.4 2h4l.4-2a7.7 7.7 0 0 0 1.7-1l2.4 1 2-3.5z"/></svg>
+            Settings
+          </button>
+        </div>
+      </div>
+      <div id="source-status" class="source-status" data-source="file">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="source-status-text">Showing: File</span>
+      </div>
+    </header>
+    <main class="workspace">
+      <aside class="session" id="session">
+        <section class="side-block">
+          <h3>Connection</h3>
+          <div id="studio-state" class="studio-state">Not connected</div>
+          <div class="session-name" id="kb-name">Keyboard</div>
+          <button id="studio-connect" class="ghost-btn">Connect</button>
+        </section>
+        <section class="side-block">
+          <h3>Keyboard</h3>
+          <select id="layout-profile" aria-label="Layout profile"></select>
+        </section>
+        <div class="inspect" id="inspect">
+          <div>Click a key to inspect its behavior.</div>
+        </div>
+        <p class="flash-hint">
+          <strong>Live Apply</strong> works for existing bindings only.
+          New macros, combos, layers, and behaviors require Download → flash.
+        </p>
+        <div id="color-legend" class="color-legend" aria-label="Key colors">
+          <span><i class="lg-sel"></i>Selected</span>
+          <span><i class="lg-hold"></i>Hold-tap</span>
+          <span><i class="lg-layer"></i>Layer</span>
+          <span><i class="lg-macro"></i>Macro</span>
+          <span><i class="lg-combo"></i>Combo</span>
+          <span><i class="lg-other"></i>Other</span>
+          <span class="lg-extra"><i class="lg-open"></i>Opens layer</span>
+          <span class="lg-extra"><i class="lg-prot"></i>Recovery</span>
+        </div>
+      </aside>
+      <section class="board">
+        <div id="layers" class="layers"></div>
+        <div class="palette-bar">
+          <div class="palette-head">
+            <label class="palette-cat">
+              <span>Keys</span>
+              <select id="category" aria-label="Key category"></select>
+            </label>
+            <input id="search" type="search" placeholder="Search keys…" />
+          </div>
+          <div id="palette" class="palette"></div>
+        </div>
+        <div id="layer-offline" class="layer-offline" hidden>
+          <div class="flash-copy">
+            <strong id="flash-banner-title"></strong>
+            <span id="layer-offline-text"></span>
+          </div>
+          <button type="button" id="layer-offline-download">Download keymap to flash</button>
+        </div>
+        <p id="combo-pick-hint" class="combo-pick-hint" hidden>Click keys on the layout to add or remove them.</p>
+        <div class="kb-wrap">
+          <svg id="keyboard" class="keyboard" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <section id="combo-builder" class="combo-editor" hidden>
+          <form id="builder-form">
+            <div class="combo-dialog-top">
+              <h2 id="builder-title">New combination</h2>
+              <input id="builder-name" class="builder-name" type="text" autocomplete="off" placeholder="optional name" />
+              <span id="builder-kind" class="combo-keys-pill">Combo</span>
+              <button type="button" id="builder-x" class="settings-close" aria-label="Close">×</button>
+            </div>
+            <div class="builder-block step-active" id="builder-trigger-block" data-builder-step="trigger">
+              <div class="assign-head">
+                <span>Trigger keys</span>
+                <span class="field-hint" id="builder-trigger-hint">Click keys on the layout</span>
+              </div>
+              <div id="builder-triggers" class="builder-keys"></div>
+            </div>
+            <div class="builder-block step-idle" id="builder-output-block" data-builder-step="output">
+              <div class="assign-head">
+                <span>Output keys</span>
+                <span class="field-hint" id="builder-output-hint">Click keys in the palette</span>
+              </div>
+              <div id="builder-outputs" class="builder-keys"></div>
+            </div>
+            <div class="builder-block step-idle" id="builder-hold-output" data-builder-step="output" hidden>
+              <div class="assign-head">
+                <span>Hold sends</span>
+                <span class="field-hint">Layer, modifier, or another key</span>
+              </div>
+              <div class="builder-cats" id="builder-hold-cats">
+                <button type="button" data-hold-cat="layers">Layers</button>
+                <button type="button" data-hold-cat="modifiers">Modifiers</button>
+                <button type="button" data-hold-cat="keys">Other keys</button>
+              </div>
+              <div id="builder-hold-choices" class="builder-choices"></div>
+              <div id="builder-hrm-mode" class="builder-hrm-mode" hidden>
+                <label><input type="radio" name="hrm-mode" value="single" /> Single home-row mod</label>
+                <label><input type="radio" name="hrm-mode" value="set" checked /> Home-row mod set (recommended)</label>
+              </div>
+              <p id="builder-hrm-set-hint" class="field-hint" hidden>Click more home-row keys, then set a modifier for each.</p>
+            </div>
+            <div class="builder-meta">
+              <p id="builder-summary" class="builder-summary">Click a key on the layout to begin.</p>
+              <label class="check tight">
+                <input id="builder-advanced" type="checkbox" />
+                Advanced
+              </label>
+            </div>
+            <div id="builder-advanced-panel" class="builder-advanced" hidden>
+              <pre id="builder-def" class="builder-def"></pre>
+              <div id="builder-adv-combo">
+                <label class="field" id="builder-binding-field">
+                  <span>Binding</span>
+                  <input id="builder-binding" type="text" spellcheck="false" placeholder="&amp;kp ESC" />
+                </label>
+                <div class="fields-3">
+                  <label class="field" id="builder-timeout-field">
+                    <span>Timeout ms</span>
+                    <input id="builder-timeout" type="number" min="10" max="500" />
+                  </label>
+                  <label class="field" id="builder-layers-field">
+                    <span>Layers</span>
+                    <input id="builder-layers" type="text" placeholder="blank = every layer" />
+                  </label>
+                  <label class="field" id="builder-term-field">
+                    <span>Tapping term ms</span>
+                    <input id="builder-term" type="number" min="50" max="800" />
+                  </label>
+                </div>
+              </div>
+              <div id="builder-adv-macro">
+                <div class="assign-head"><span>Steps</span></div>
+                <div id="builder-steps" class="macro-steps"></div>
+                <div class="macro-add-steps">
+                  <button type="button" data-builder-add="tap">+ Tap</button>
+                  <button type="button" data-builder-add="press">+ Press</button>
+                  <button type="button" data-builder-add="release">+ Release</button>
+                  <button type="button" data-builder-add="pause">+ Pause for release</button>
+                  <button type="button" data-builder-add="wait">+ Wait</button>
+                </div>
+              </div>
+            </div>
+            <div class="combo-dialog-actions">
+              <button type="button" id="builder-cancel">Cancel</button>
+              <button type="button" id="builder-delete" class="danger" hidden>Delete</button>
+              <button type="submit" id="builder-save" class="primary">Save</button>
+            </div>
+          </form>
+        </section>
+        <section id="combo-editor" class="combo-editor" hidden>
+          <form id="combo-form">
+            <div class="combo-dialog-top">
+              <h2 id="combo-dialog-title">New combo</h2>
+              <span id="combo-keys-pill" class="combo-keys-pill">keys: —</span>
+              <div id="combo-output-preview" class="combo-output-preview">Esc</div>
+            </div>
+            <div class="fields-3">
+              <label class="field">
+                <span>Name</span>
+                <input id="combo-name" type="text" autocomplete="off" placeholder="esc combo" />
+              </label>
+              <label class="field">
+                <span>Output</span>
+                <input id="combo-binding" type="text" autocomplete="off" placeholder="&kp ESC" />
+              </label>
+              <label class="field">
+                <span>Timeout ms</span>
+                <input id="combo-timeout" type="number" min="10" max="500" value="50" />
+              </label>
+            </div>
+            <div class="fields-3">
+              <label class="field">
+                <span>Only on layers</span>
+                <input id="combo-layers" type="text" placeholder="blank = every layer" />
+              </label>
+              <div class="combo-dialog-actions">
+                <button type="button" id="combo-cancel">Cancel</button>
+                <button type="button" id="combo-delete" class="danger" hidden>Delete</button>
+                <button type="submit" id="combo-save" class="primary">Save combo</button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <section id="behavior-editor" class="combo-editor" hidden>
+          <form id="behavior-form">
+            <div class="combo-dialog-top">
+              <h2 id="behavior-title">New behavior</h2>
+              <div class="board-mode" id="behavior-mode">
+                <label><input type="radio" name="behavior-mode" value="triggers" checked /> Opposite-hand triggers</label>
+                <label><input type="radio" name="behavior-mode" value="mods" /> Homerow keys</label>
+              </div>
+              <span id="behavior-keys-pill" class="combo-keys-pill">triggers: —</span>
+            </div>
+            <div class="fields-3">
+              <label class="field">
+                <span>Type</span>
+                <select id="behavior-type">
+                  <option value="hold-tap">Hold-tap — hold one, tap another</option>
+                  <option value="mod-morph">Mod-morph — different output with a modifier</option>
+                  <option value="tap-dance">Tap-dance — 1× / 2× taps</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Label</span>
+                <input id="behavior-id" type="text" autocomplete="off" placeholder="hml" />
+              </label>
+              <label class="field">
+                <span>Name</span>
+                <input id="behavior-name" type="text" autocomplete="off" placeholder="homerow_mods_left" />
+              </label>
+            </div>
+            <div id="bh-holdtap">
+              <div class="fields-3">
+                <label class="field">
+                  <span>Flavor</span>
+                  <select id="behavior-flavor">
+                    <option value="balanced">balanced</option>
+                    <option value="tap-preferred">tap-preferred</option>
+                    <option value="hold-preferred">hold-preferred</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Tapping term ms</span>
+                  <input id="behavior-term" type="number" min="50" max="800" value="280" />
+                </label>
+                <label class="field">
+                  <span>Quick-tap ms</span>
+                  <input id="behavior-quick" type="number" min="0" max="500" value="175" />
+                </label>
+              </div>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Prior idle ms</span>
+                  <input id="behavior-idle" type="number" min="0" max="500" value="150" />
+                </label>
+                <label class="check tight">
+                  <input id="behavior-on-release" type="checkbox" checked />
+                  Hold trigger on release
+                </label>
+              </div>
+              <div class="assign-head">
+                <span>Keys using this hold-tap</span>
+                <label class="check inline"><input id="behavior-all-layers" type="checkbox" /> All layers</label>
+              </div>
+              <div id="behavior-assigns" class="assign-list"></div>
+              <div class="assign-row add-row">
+                <div class="pos">Add</div>
+                <select id="behavior-add-hold" aria-label="Hold modifier"></select>
+                <input id="behavior-add-tap" type="text" value="" placeholder="from key" aria-label="Tap key" />
+                <button type="button" id="behavior-place">Place on key</button>
+              </div>
+              <p class="field-hint" id="behavior-place-hint">Hold + Place on key, then click the key above.</p>
+            </div>
+            <div id="bh-morph" hidden>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Default</span>
+                  <input id="morph-default" type="text" placeholder="&kp DOT" />
+                </label>
+                <label class="field">
+                  <span>When modifier held</span>
+                  <input id="morph-held" type="text" placeholder="&kp COMMA" />
+                </label>
+              </div>
+              <div class="assign-head"><span>Trigger modifiers</span></div>
+              <div id="morph-mods" class="mod-grid"></div>
+              <label class="check tight">
+                <input id="morph-mask" type="checkbox" checked />
+                Mask held modifier (Shift+comma → comma, not &gt;)
+              </label>
+              <p class="field-hint">Click a key on the board to bind <code>&amp;label</code> there.</p>
+            </div>
+            <div id="bh-dance" hidden>
+              <div class="fields-3">
+                <label class="field">
+                  <span>1× tap</span>
+                  <input id="dance-1" type="text" placeholder="&kp N1" />
+                </label>
+                <label class="field">
+                  <span>2× tap</span>
+                  <input id="dance-2" type="text" placeholder="&kp N2" />
+                </label>
+                <label class="field">
+                  <span>Tapping term ms</span>
+                  <input id="dance-term" type="number" min="50" max="800" value="200" />
+                </label>
+              </div>
+              <p class="field-hint">Click a key on the board to bind <code>&amp;label</code> there.</p>
+            </div>
+            <div class="combo-dialog-actions">
+              <button type="button" id="behavior-cancel">Cancel</button>
+              <button type="button" id="behavior-delete" class="danger" hidden>Delete</button>
+              <button type="submit" id="behavior-save" class="primary">Save behavior</button>
+            </div>
+          </form>
+        </section>
+        <section id="macro-editor" class="combo-editor" hidden>
+          <form id="macro-form">
+            <div class="combo-dialog-top">
+              <h2 id="macro-title">New macro</h2>
+              <span id="macro-pill" class="combo-keys-pill">0 steps</span>
+            </div>
+            <div class="fields-3">
+              <label class="field">
+                <span>Label</span>
+                <input id="macro-id" type="text" autocomplete="off" placeholder="mac_lock" />
+              </label>
+              <label class="field">
+                <span>Name</span>
+                <input id="macro-name" type="text" autocomplete="off" placeholder="mac_lock_screen" />
+              </label>
+              <label class="field">
+                <span>Wait ms</span>
+                <input id="macro-wait" type="number" min="0" max="2000" placeholder="default" />
+              </label>
+            </div>
+            <div class="assign-head"><span>Steps</span></div>
+            <div id="macro-steps" class="macro-steps"></div>
+            <div class="macro-add-steps">
+              <button type="button" data-macro-add="tap">+ Tap</button>
+              <button type="button" data-macro-add="press">+ Press</button>
+              <button type="button" data-macro-add="release">+ Release</button>
+              <button type="button" data-macro-add="pause">+ Pause for release</button>
+              <button type="button" data-macro-add="wait">+ Wait</button>
+            </div>
+            <p class="field-hint">Click a key on the board to bind <code>&amp;label</code>. Palette click fills the selected step.</p>
+            <div class="combo-dialog-actions">
+              <button type="button" id="macro-cancel">Cancel</button>
+              <button type="button" id="macro-delete" class="danger" hidden>Delete</button>
+              <button type="submit" id="macro-save" class="primary">Save macro</button>
+            </div>
+          </form>
+        </section>
+        <div class="lists-row combinations-row">
+          <section class="combos kind-combo" id="combinations-section">
+            <div class="combos-head">
+              <h2>Combinations</h2>
+              <div class="combo-filters" id="combo-filters">
+                <button type="button" data-filter="all" class="on">All</button>
+                <button type="button" data-filter="hold-tap">Hold-taps</button>
+                <button type="button" data-filter="combo">Combos</button>
+                <button type="button" data-filter="macro">Macros</button>
+              </div>
+              <button id="combo-new" type="button">+ New</button>
+            </div>
+            <div id="combinations" class="combo-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+    <div id="repo-discover" class="settings-overlay repo-discover-overlay" hidden>
+      <div class="settings-panel repo-discover-panel" role="dialog" aria-modal="true" aria-labelledby="repo-discover-title">
+        <div class="settings-head">
+          <h2 id="repo-discover-title">Found in repo</h2>
+          <button type="button" id="repo-discover-x" class="settings-close" aria-label="Close">×</button>
+        </div>
+        <p id="repo-discover-repo" class="field-hint"></p>
+        <pre id="repo-discover-summary" class="repo-found"></pre>
+        <div id="repo-discover-pickers" class="repo-discover-pickers" hidden>
+          <label class="field">
+            <span>Keymap</span>
+            <select id="repo-keymap" aria-label="Keymap file"></select>
+          </label>
+          <label class="field">
+            <span>Layout</span>
+            <select id="repo-layout" aria-label="Layout file"></select>
+          </label>
+        </div>
+        <div class="combo-dialog-actions">
+          <button type="button" id="repo-discover-cancel">Cancel</button>
+          <button type="button" id="repo-discover-pick">Pick different files</button>
+          <button type="button" id="repo-discover-use" class="primary">Use these</button>
+        </div>
+      </div>
+    </div>
+    <div id="settings" class="settings-overlay" hidden>
+      <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="settings-head">
+          <h2 id="settings-title">Settings</h2>
+          <button type="button" id="settings-close" class="settings-close" aria-label="Close settings">×</button>
+        </div>
+        <form id="settings-form" class="settings-form">
+          <section class="settings-section">
+            <h3>Editor</h3>
+            <label class="settings-row">
+              <span class="settings-label">
+                Preferred OS
+                <small>How modifiers are labeled. Does not change keycodes.</small>
+              </span>
+              <select id="set-os" aria-label="Preferred OS">
+                <option value="mac">Mac</option>
+                <option value="windows">Windows</option>
+                <option value="linux">Linux</option>
+              </select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-label">
+                Clear binding
+                <small>Written when a key is cleared or dragged off the board.</small>
+              </span>
+              <select id="set-empty" aria-label="Clear binding">
+                <option value="&none">&amp;none</option>
+                <option value="&trans">&amp;trans</option>
+              </select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-label">
+                Show position numbers
+                <small>Small index on each key (0, 1, 2…).</small>
+              </span>
+              <input id="set-positions" type="checkbox" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-label">
+                Show color coding
+                <small>Role colors for macros, hold-taps, layers, and combos.</small>
+              </span>
+              <input id="set-colors" type="checkbox" />
+            </label>
+          </section>
+          <section class="settings-section">
+            <h3>Defaults</h3>
+            <label class="settings-row">
+              <span class="settings-label">
+                Tapping term
+                <small>Default ms for new hold-tap behaviors.</small>
+              </span>
+              <input id="set-tapping" type="number" min="50" max="800" step="5" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-label">
+                Combo timeout
+                <small>Default ms for new combos.</small>
+              </span>
+              <input id="set-combo-timeout" type="number" min="10" max="500" step="5" />
+            </label>
+          </section>
+          <section class="settings-section">
+            <h3>Connection</h3>
+            <label class="settings-row">
+              <span class="settings-label">
+                Confirm before Apply
+                <small>Ask before writing the editor onto the keyboard.</small>
+              </span>
+              <input id="set-confirm-apply" type="checkbox" />
+            </label>
+          </section>
+        </form>
+      </div>
+    </div>
+    <div id="builder-conflict" class="settings-overlay" hidden>
+      <div class="settings-panel builder-conflict-panel" role="dialog" aria-labelledby="builder-conflict-title">
+        <h2 id="builder-conflict-title">Replace existing hold?</h2>
+        <p id="builder-conflict-text"></p>
+        <div class="combo-dialog-actions">
+          <button type="button" id="builder-conflict-cancel">Cancel</button>
+          <button type="button" id="builder-conflict-replace" class="primary">Replace</button>
+        </div>
+      </div>
+    </div>
+    <div class="status" id="status">Load a keymap to begin.</div>
+    <script type="module">
+      import { applyTheme } from "../../src/ui/theme.js?v=40";
+      applyTheme();
+      import("../../src/ui/app.js?v=40").catch((err) => {
+        const el = document.getElementById("status");
+        if (el) el.textContent = `Editor failed to start: ${err.message}`;
+        console.error(err);
+      });
+    </script>
+  </body>
+</html>
