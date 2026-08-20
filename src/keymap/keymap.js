@@ -840,6 +840,15 @@ export function bindingLabel(text) {
     if (parts[1] === "BT_CLR") return "BTx";
     return parts[1] || "BT";
   }
+  if (parts[0] === "&mmv") {
+    return { MOVE_UP: "↑", MOVE_DOWN: "↓", MOVE_LEFT: "←", MOVE_RIGHT: "→" }[parts[1]] || parts[1] || "mmv";
+  }
+  if (parts[0] === "&msc") {
+    return { SCRL_UP: "Scr↑", SCRL_DOWN: "Scr↓", SCRL_LEFT: "Scr←", SCRL_RIGHT: "Scr→" }[parts[1]] || parts[1] || "Scr";
+  }
+  if (parts[0] === "&mkp") {
+    return { LCLK: "Lclk", RCLK: "Rclk", MCLK: "Mclk", MB1: "Lclk", MB2: "Rclk", MB3: "Mclk", MB4: "MB4", MB5: "MB5" }[parts[1]] || parts[1] || "Click";
+  }
   if (parts[0] === "&kp") {
     const key = parts.slice(1).find((p) => p && p !== "0") || parts[1] || "";
     const prettyKp = formatChord(key);

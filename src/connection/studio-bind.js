@@ -97,6 +97,48 @@ export const BT_CMD = {
   BT_DISC: 5,
 };
 
+/** ZMK pointing.h with default MOVE_VAL=600, SCRL_VAL=10 (uint32 encoded). */
+const u16 = (n) => n & 0xffff;
+const moveX = (hor) => (u16(hor) << 16) >>> 0;
+const moveY = (vert) => u16(vert) >>> 0;
+const MOVE_VAL = 600;
+const SCRL_VAL = 10;
+
+export const MOUSE_MOVE = {
+  MOVE_UP: moveY(-MOVE_VAL),
+  MOVE_DOWN: moveY(MOVE_VAL),
+  MOVE_LEFT: moveX(-MOVE_VAL),
+  MOVE_RIGHT: moveX(MOVE_VAL),
+};
+
+export const MOUSE_SCROLL = {
+  SCRL_UP: moveY(SCRL_VAL),
+  SCRL_DOWN: moveY(-SCRL_VAL),
+  SCRL_LEFT: moveX(-SCRL_VAL),
+  SCRL_RIGHT: moveX(SCRL_VAL),
+};
+
+export const MOUSE_BTN = {
+  LCLK: 1,
+  MB1: 1,
+  RCLK: 2,
+  MB2: 2,
+  MCLK: 4,
+  MB3: 4,
+  MB4: 8,
+  MB5: 16,
+};
+
+const MOUSE_CMD = { ...MOUSE_MOVE, ...MOUSE_SCROLL, ...MOUSE_BTN };
+
+function nameFromTable(value, table, prefer = []) {
+  const n = Number(value) >>> 0;
+  const hits = Object.entries(table).filter(([, v]) => (v >>> 0) === n).map(([k]) => k);
+  if (!hits.length) return null;
+  for (const p of prefer) if (hits.includes(p)) return p;
+  return hits[0];
+}
+
 const BEHAVIOR_ALIASES = {
   kp: ["key press", "kp", "key_press"],
   trans: ["transparent", "trans"],
@@ -105,15 +147,40 @@ const BEHAVIOR_ALIASES = {
   to: ["to layer", "to"],
   tog: ["toggle layer", "tog"],
   lt: ["layer tap", "layer-tap", "lt"],
-  sl: ["sticky layer", "sl"],
+  sl: ["sticky layer", "sticky-layer", "sl"],
   bt: ["bluetooth", "bt"],
-  sk: ["sticky key", "sk"],
-  hml: ["hml", "homerow_mods_left"],
-  hmr: ["hmr", "homerow_mods_right"],
-  sys_reset: ["sys_reset", "system reset", "reset"],
-  host_log_dump: ["host_log_dump", "host log dump"],
+  sk: ["sticky key", "sticky-key", "sticky", "sk", "one shot", "oneshot"],
+  mt: ["mod tap", "mod-tap", "mt"],
+  hml: ["hml", "homerow mods left", "homerow_mods_left"],
+  hmr: ["hmr", "homerow mods right", "homerow_mods_right"],
+  sys_reset: ["sys_reset", "sysreset", "system reset", "soft reset", "reset"],
+  bootloader: ["bootloader", "bootload", "uf2"],
+  host_log_dump: ["host_log_dump", "host log dump", "log dump"],
   mac_lock: ["mac_lock", "mac lock"],
   win_lock: ["win_lock", "win lock"],
+  studio_unlock: ["studio_unlock", "studio unlock", "unlock"],
+  msc: ["mouse scroll", "mouse_scroll", "mousescroll", "scroll", "msc"],
+  mmv: ["move mouse", "mouse move", "mouse_move", "mousemove", "mmv"],
+  mkp: ["mouse key press", "mouse button", "mouse_key_press", "mouse click", "mkp"],
+};
+
+const HID_ALIASES = {
+  LSHIFT: "LSHFT",
+  LSFT: "LSHFT",
+  LEFTSHIFT: "LSHFT",
+  RSHIFT: "RSHFT",
+  RSFT: "RSHFT",
+  RIGHTSHIFT: "RSHFT",
+  LCTL: "LCTRL",
+  LCONTROL: "LCTRL",
+  RCTL: "RCTRL",
+  RCONTROL: "RCTRL",
+  LOPTION: "LALT",
+  ROPTION: "RALT",
+  LCMD: "LGUI",
+  LWIN: "LGUI",
+  RCMD: "RGUI",
+  RWIN: "RGUI",
 };
 
 export function parseBindingText(text) {
@@ -153,7 +220,7 @@ export function parseBindingText(text) {
 
 export function hidUsage(token) {
   if (token == null || token === "") return null;
-  const t = String(token).trim();
+  let t = String(token).trim();
   const wrap = t.match(/^(LC|LS|LA|LG|RC|RS|RA|RG)\((.+)\)$/);
   if (wrap) {
     const inner = hidUsage(wrap[2]);
@@ -161,10 +228,13 @@ export function hidUsage(token) {
     return (MOD_WRAP[wrap[1]] << 24) | inner;
   }
   if (/^\d+$/.test(t)) return Number(t);
+  t = HID_ALIASES[t.toUpperCase()] || t;
+  const upper = t.toUpperCase();
+  if (NAMED[upper] != null) return NAMED[upper];
   if (NAMED[t] != null) return NAMED[t];
-  if (/^[A-Z]$/.test(t)) return NAMED[t];
-  if (/^N[0-9]$/.test(t) && NAMED[t] != null) return NAMED[t];
-  if (/^F([1-9]|1[0-2])$/.test(t)) return NAMED[t];
+  if (/^[A-Z]$/.test(upper)) return NAMED[upper];
+  if (/^N[0-9]$/.test(upper) && NAMED[upper] != null) return NAMED[upper];
+  if (/^F([1-9]|1[0-2])$/.test(upper)) return NAMED[upper];
   return null;
 }
 
@@ -177,17 +247,227 @@ function norm(s) {
     .trim();
 }
 
-export function findBehavior(behaviors, dtsName) {
+function behaviorMatchScore(displayName, dtsName) {
+  const dn = norm(displayName);
+  const compact = dn.replace(/\s+/g, "");
   const want = norm(dtsName);
+  const wantCompact = want.replace(/\s+/g, "");
   const aliases = (BEHAVIOR_ALIASES[dtsName] || [dtsName]).map(norm);
-  const aliasCompact = new Set(aliases.map((a) => a.replace(/\s+/g, "")));
-  for (const b of behaviors) {
-    const dn = norm(b.displayName);
-    const compact = dn.replace(/\s+/g, "");
-    if (dn === want || compact === want) return b;
-    if (aliases.includes(dn) || aliasCompact.has(compact)) return b;
-    if (want === "hml" && /homerow/.test(dn) && /left/.test(dn)) return b;
-    if (want === "hmr" && /homerow/.test(dn) && /right/.test(dn)) return b;
+  if (!dn && !compact) return 0;
+  if (dn === want || compact === wantCompact) return 100;
+  if (aliases.includes(dn) || aliases.some((a) => a.replace(/\s+/g, "") === compact)) return 100;
+  if (dtsName === "sk" && /\bsticky\b/.test(dn) && /\bkey\b/.test(dn) && !/\blayer\b/.test(dn)) return 90;
+  if (dtsName === "sl" && /\bsticky\b/.test(dn) && /\blayer\b/.test(dn)) return 90;
+  if (dtsName === "sys_reset" && /^(soft )?reset$/.test(dn) && !/boot/.test(dn)) return 90;
+  if (dtsName === "hml" && /homerow/.test(dn) && /left/.test(dn)) return 90;
+  if (dtsName === "hmr" && /homerow/.test(dn) && /right/.test(dn)) return 90;
+  if (dtsName === "mmv" && /mouse/.test(dn) && /move/.test(dn) && !/scroll/.test(dn)) return 90;
+  if (dtsName === "msc" && (/scroll/.test(dn) || (/mouse/.test(dn) && /wheel/.test(dn)))) return 90;
+  if (dtsName === "mkp" && /mouse/.test(dn) && /press|button|click/.test(dn)) return 90;
+  let best = 0;
+  for (const a of aliases) {
+    const words = a.split(" ").filter((w) => w.length > 1);
+    if (words.length && words.every((w) => new RegExp(`(?:^| )${w}(?: |$)`).test(dn))) {
+      best = Math.max(best, 40 + words.length * 10);
+    }
+  }
+  return best;
+}
+
+const KNOWN_NON_MOUSE = new Set([
+  "kp",
+  "trans",
+  "none",
+  "mo",
+  "to",
+  "tog",
+  "lt",
+  "sl",
+  "bt",
+  "sk",
+  "mt",
+  "hml",
+  "hmr",
+  "sys_reset",
+  "bootloader",
+  "host_log_dump",
+  "mac_lock",
+  "win_lock",
+  "studio_unlock",
+  "mkp",
+]);
+
+function namedDts(behavior) {
+  let best = "";
+  let bestScore = 0;
+  for (const dts of Object.keys(BEHAVIOR_ALIASES)) {
+    const score = behaviorMatchScore(behavior.displayName, dts);
+    if (score > bestScore) {
+      best = dts;
+      bestScore = score;
+    }
+  }
+  if (bestScore >= 40) return best;
+  const k = paramKinds(behavior.param1);
+  if (["LCLK", "RCLK", "MB1", "MB4"].some((n) => k.constants.has(n))) return "mkp";
+  if (["MOVE_UP", "MOVE_LEFT"].some((n) => k.constants.has(n))) return "mmv";
+  if (["SCRL_UP", "SCRL_LEFT"].some((n) => k.constants.has(n))) return "msc";
+  return "";
+}
+
+function isZeroCellBehavior(behavior) {
+  const p1 = paramKinds(behavior.param1);
+  const p2 = paramKinds(behavior.param2);
+  return p1.nil && !p1.hid && !p1.layer && !p1.constants.size && !p2.hid && !p2.layer && !p2.constants.size;
+}
+
+/** Classify a Studio behavior as mmv, msc, a generic two-axis, or not a mouse axis. */
+function twoAxisHint(behavior) {
+  const named = namedDts(behavior);
+  if (named === "mmv" || named === "msc") return named;
+  if (named && KNOWN_NON_MOUSE.has(named)) return null;
+  const p1 = paramKinds(behavior.param1);
+  if (p1.hid || p1.layer) return null;
+  if (isZeroCellBehavior(behavior)) return null;
+  const dn = norm(behavior.displayName);
+  if (/scroll|wheel/.test(dn) && !/move/.test(dn)) return "msc";
+  if ((/mouse/.test(dn) && /move/.test(dn)) || dn === "mmv") return "mmv";
+  if (/input two axis|two axis/.test(dn) || dn === "zmk behavior input two axis") return "axis";
+  if (!dn) return "axis";
+  if (!named) return "axis";
+  return null;
+}
+
+function findBehaviorByShape(behaviors, dtsName) {
+  const list = behaviors || [];
+  const hasConst = (b, names) => {
+    const k = paramKinds(b.param1);
+    return names.some((n) => k.constants.has(n));
+  };
+  if (dtsName === "mkp") {
+    return (
+      list.find((b) => hasConst(b, ["LCLK", "RCLK", "MB1", "MB2"])) ||
+      list.find((b) => /mouse/.test(norm(b.displayName)) && /press|button|click|key/.test(norm(b.displayName)))
+    );
+  }
+  if (dtsName === "mmv") {
+    return list.find((b) => hasConst(b, ["MOVE_UP", "MOVE_LEFT", "MOVE_DOWN", "MOVE_RIGHT"])) || pairTwoAxis(list).mmv;
+  }
+  if (dtsName === "msc") {
+    return list.find((b) => hasConst(b, ["SCRL_UP", "SCRL_LEFT", "SCRL_DOWN", "SCRL_RIGHT"])) || pairTwoAxis(list).msc;
+  }
+  return null;
+}
+
+function pairTwoAxis(behaviors) {
+  const cands = (behaviors || [])
+    .map((b) => ({ b, hint: twoAxisHint(b) }))
+    .filter((x) => x.hint)
+    .sort((a, b) => a.b.id - b.b.id);
+  const out = { mmv: null, msc: null };
+  for (const { b, hint } of cands) {
+    if (hint === "mmv" && !out.mmv) out.mmv = b;
+    if (hint === "msc" && !out.msc) out.msc = b;
+  }
+  const unused = cands.filter((x) => x.b !== out.mmv && x.b !== out.msc);
+  if (!out.mmv && unused[0]) out.mmv = unused.shift().b;
+  if (!out.msc && unused[0]) out.msc = unused.shift().b;
+  return out;
+}
+
+let inferredBehaviorIds = {};
+
+export function setInferredBehaviorIds(map) {
+  inferredBehaviorIds = { ...(map || {}) };
+}
+
+function cellStudioId(cell, behaviors) {
+  // `behaviorId` is the decoded sint32 value. `rawBehaviorId` is only the
+  // protobuf wire value and may coincidentally equal another behavior's local
+  // ID (for example zigzag(7) === 14). Always use the logical value first.
+  const logical = Number(cell?.behaviorId);
+  const raw = Number(cell?.rawBehaviorId);
+  const listed = (behaviors || []).map((b) => b.id);
+  if (listed.includes(logical)) return logical;
+  if (listed.includes(raw)) return raw;
+  return Number.isFinite(logical) ? logical : raw;
+}
+
+function cellBehaviorIsNonMouse(cell, behaviors) {
+  const b = findBehaviorById(behaviors, cell);
+  if (!b) return false;
+  const named = namedDts(b);
+  if (named === "mmv" || named === "msc") return false;
+  if (named && KNOWN_NON_MOUSE.has(named)) return true;
+  const p1 = paramKinds(b.param1);
+  return !!(p1.hid || p1.layer);
+}
+
+export function inferBehaviorIdsFromKeymap(studioLayers, behaviors = []) {
+  const found = {};
+  const take = (name, cell) => {
+    if (found[name] != null) return;
+    const id = cellStudioId(cell, behaviors);
+    if (id != null && !Number.isNaN(id)) found[name] = id;
+  };
+  for (const layer of studioLayers || []) {
+    for (const cell of layer.bindings || []) {
+      if (!cell) continue;
+      if (nameFromTable(cell.param1, MOUSE_MOVE)) {
+        if (!cellBehaviorIsNonMouse(cell, behaviors)) take("mmv", cell);
+      } else if (nameFromTable(cell.param1, MOUSE_SCROLL)) {
+        if (!cellBehaviorIsNonMouse(cell, behaviors)) take("msc", cell);
+      } else if (nameFromTable(cell.param1, { MB4: 8, MB5: 16 })) take("mkp", cell);
+    }
+  }
+  return found;
+}
+
+function guessUnnamedMouseIds(behaviors) {
+  const pair = pairTwoAxis(behaviors);
+  const out = {};
+  if (pair.mmv) out.mmv = pair.mmv.id;
+  if (pair.msc) out.msc = pair.msc.id;
+  return out;
+}
+
+export function rememberStudioBehaviors(behaviors, studioLayers) {
+  const guessed = guessUnnamedMouseIds(behaviors);
+  const inferred = inferBehaviorIdsFromKeymap(studioLayers, behaviors);
+  // A live keymap is stronger evidence than ID ordering. Local IDs are
+  // persisted by ZMK and are not semantic, so the two generic input-axis
+  // behaviors cannot safely be assigned by sorting their IDs.
+  const remembered = { ...guessed, ...inferred };
+  setInferredBehaviorIds(remembered);
+  return remembered;
+}
+
+function syntheticBehavior(id, dtsName) {
+  return { id, displayName: dtsName, param1: [], param2: [] };
+}
+
+export function findBehavior(behaviors, dtsName) {
+  let best = null;
+  let bestScore = 0;
+  for (const b of behaviors || []) {
+    const score = behaviorMatchScore(b.displayName, dtsName);
+    if (score > bestScore) {
+      best = b;
+      bestScore = score;
+    }
+  }
+  if (bestScore >= 40) return best;
+  let inferred = inferredBehaviorIds[dtsName];
+  if (inferred != null) {
+    return (behaviors || []).find((b) => b.id === inferred) || syntheticBehavior(inferred, dtsName);
+  }
+  const shaped = findBehaviorByShape(behaviors, dtsName);
+  if (shaped) return shaped;
+  if (dtsName === "mmv" || dtsName === "msc") {
+    inferred = guessUnnamedMouseIds(behaviors)[dtsName];
+    if (inferred != null) {
+      return (behaviors || []).find((b) => b.id === inferred) || syntheticBehavior(inferred, dtsName);
+    }
   }
   return null;
 }
@@ -203,18 +483,24 @@ function paramKinds(descs) {
   return kinds;
 }
 
+function layerNameKey(raw) {
+  return String(raw || "")
+    .replace(/_layer$/i, "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
 export function resolveLayerId(token, layers) {
   if (token == null) return null;
   const t = String(token).trim();
   if (/^\d+$/.test(t)) {
     const n = Number(t);
-    const byId = layers.find((l) => l.id === n);
+    const byId = (layers || []).find((l) => l.id === n);
     return byId ? byId.id : n;
   }
-  const name = t.replace(/_layer$/i, "").toUpperCase();
-  for (const l of layers) {
-    const ln = String(l.name || "").replace(/_layer$/i, "").toUpperCase();
-    if (ln === name) return l.id;
+  const name = layerNameKey(t);
+  for (const l of layers || []) {
+    if (layerNameKey(l.name) === name || layerNameKey(l.id) === name) return l.id;
   }
   return null;
 }
@@ -223,6 +509,7 @@ function encodeArg(token, kinds, layers) {
   if (token == null) return 0;
   const upper = String(token).toUpperCase();
   if (kinds.constants.has(upper)) return kinds.constants.get(upper);
+  if (MOUSE_CMD[upper] != null) return MOUSE_CMD[upper] >>> 0;
   if (BT_CMD[upper] != null && !kinds.hid && !kinds.layer) return BT_CMD[upper];
   if (kinds.hid) {
     const u = hidUsage(token);
@@ -247,6 +534,14 @@ export function bindingToCells(text, behaviors, layers) {
   if (!parsed) return { ok: false, reason: "not a binding" };
   const behavior = findBehavior(behaviors, parsed.name);
   if (!behavior) return { ok: false, reason: `behavior &${parsed.name} is not in this firmware` };
+  // ZMK's built-in input-two-axis driver has no parameter metadata. Studio
+  // therefore rejects every non-zero binding for it during validation, even
+  // though the behavior is listed and the numeric value is easy to encode.
+  // Treat that as a flash-only binding instead of reporting a false live
+  // success and leaving the user with an apparently empty key.
+  if ((parsed.name === "mmv" || parsed.name === "msc") && !behavior.param1?.length && !behavior.param2?.length) {
+    return { ok: false, reason: `behavior &${parsed.name} has no Studio parameter metadata; download and flash this change` };
+  }
   const p1 = paramKinds(behavior.param1);
   const p2 = paramKinds(behavior.param2);
   try {
@@ -288,7 +583,11 @@ export function hidToken(usage) {
   const n = Number(usage);
   if (!Number.isFinite(n) || n === 0) return null;
   if (USAGE_NAME.has(n)) return USAGE_NAME.get(n);
-  if (n <= 0xffff && USAGE_NAME.has(hid(KEY, n))) return USAGE_NAME.get(hid(KEY, n));
+  // Bare usage ids like 0x04=A. Do not treat mouse packed values (SCRL_UP=10=G) as HID.
+  if (n <= 0xffff && USAGE_NAME.has(hid(KEY, n))) {
+    if (nameFromTable(n, MOUSE_SCROLL) || nameFromTable(n, MOUSE_MOVE) || nameFromTable(n, MOUSE_BTN)) return null;
+    return USAGE_NAME.get(hid(KEY, n));
+  }
   if (n <= 0xffff && USAGE_NAME.has(hid(CON, n))) return USAGE_NAME.get(hid(CON, n));
   const mods = (n >>> 24) & 0xff;
   const base = n & 0xffffff;
@@ -316,18 +615,12 @@ export function isPlaceholderBinding(text) {
 }
 
 function dtsNameFromBehavior(behavior) {
-  const dn = norm(behavior.displayName);
-  const compact = dn.replace(/\s+/g, "");
-  for (const [dts, aliases] of Object.entries(BEHAVIOR_ALIASES)) {
-    const aliasNorm = [dts, ...aliases].map(norm);
-    const aliasCompact = aliasNorm.map((a) => a.replace(/\s+/g, ""));
-    if (dn === norm(dts) || compact === dts || aliasNorm.includes(dn) || aliasCompact.includes(compact)) return dts;
-    if (dts === "hml" && /homerow/.test(dn) && /left/.test(dn)) return dts;
-    if (dts === "hmr" && /homerow/.test(dn) && /right/.test(dn)) return dts;
-  }
+  const named = namedDts(behavior);
+  if (named) return named;
   const raw = String(behavior.displayName || "").trim();
   if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) return raw;
-  return compact.replace(/\s+/g, "_") || "kp";
+  const compact = norm(behavior.displayName).replace(/\s+/g, "_");
+  return compact || "kp";
 }
 
 function hidPage(value) {
@@ -356,6 +649,11 @@ function decodeArg(value, kinds, layers) {
   }
   if (hid && (hidPage(value) === KEY || hidPage(value) === CON)) return hid;
   if (!kinds.hid && !kinds.layer && !kinds.constants.size && hid) return hid;
+  const mouse =
+    nameFromTable(value, MOUSE_MOVE, ["MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT"]) ||
+    nameFromTable(value, MOUSE_SCROLL, ["SCRL_UP", "SCRL_DOWN", "SCRL_LEFT", "SCRL_RIGHT"]) ||
+    nameFromTable(value, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
+  if (mouse) return mouse;
   return String(value);
 }
 
@@ -367,26 +665,48 @@ function shouldEmitParam(value, kinds) {
 
 function findBehaviorById(behaviors, cell) {
   const list = behaviors || [];
-  const raw = cell?.rawBehaviorId;
-  const zig = cell?.behaviorId;
-  const byRaw = list.find((b) => b.id === raw);
-  const byZig = list.find((b) => b.id === zig);
-  if (byRaw && byZig && byRaw !== byZig) {
-    const hid = hidToken(cell.param1);
-    if (hid && hidPage(cell.param1) === KEY) {
-      const hidBeh = [byRaw, byZig].find((b) => paramKinds(b.param1).hid || dtsNameFromBehavior(b) === "kp");
-      if (hidBeh) return hidBeh;
-    }
-    return byRaw;
-  }
-  return byRaw || byZig || null;
+  const logical = Number(cell?.behaviorId);
+  const raw = Number(cell?.rawBehaviorId);
+  // The firmware's BehaviorBinding.behavior_id is sint32. The parser stores
+  // its decoded value in behaviorId and retains the encoded value only for
+  // diagnostics. Never let a raw zig-zag value select a different behavior.
+  return list.find((b) => b.id === logical) || list.find((b) => b.id === raw) || null;
 }
 
 export function cellsToBinding(cell, behaviors, layers) {
   if (!cell || isEmptyStudioCell(cell)) return { ok: false, reason: "empty cell" };
+  const page = hidPage(cell.param1);
+  if (page !== KEY && page !== CON) {
+    const asMove = nameFromTable(cell.param1, MOUSE_MOVE);
+    if (asMove) return { ok: true, text: `&mmv ${asMove}` };
+    const asScroll = nameFromTable(cell.param1, MOUSE_SCROLL);
+    if (asScroll) return { ok: true, text: `&msc ${asScroll}` };
+  }
   let behavior = findBehaviorById(behaviors, cell);
   if (!behavior) return { ok: false, reason: `unknown behavior id ${cell.behaviorId}/${cell.rawBehaviorId}` };
   let name = dtsNameFromBehavior(behavior);
+  const asMove = nameFromTable(cell.param1, MOUSE_MOVE);
+  const asScroll = nameFromTable(cell.param1, MOUSE_SCROLL);
+  const asBtn = nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
+  if (asMove && name !== "mmv") {
+    const mmv = findBehavior(behaviors, "mmv");
+    if (mmv) {
+      behavior = mmv;
+      name = "mmv";
+    }
+  } else if (asScroll && name !== "msc") {
+    const msc = findBehavior(behaviors, "msc");
+    if (msc) {
+      behavior = msc;
+      name = "msc";
+    }
+  } else if (asBtn && name !== "mkp" && !hidToken(cell.param1)) {
+    const mkp = findBehavior(behaviors, "mkp");
+    if (mkp) {
+      behavior = mkp;
+      name = "mkp";
+    }
+  }
   if ((name === "mmv" || name === "msc") && hidToken(cell.param1) && hidPage(cell.param1) === KEY) {
     const kp = (behaviors || []).find((b) => dtsNameFromBehavior(b) === "kp");
     if (kp) {
@@ -404,6 +724,17 @@ export function cellsToBinding(cell, behaviors, layers) {
   if (shouldEmitParam(cell.param2, p2)) {
     const a = decodeArg(cell.param2, p2, layers);
     if (a != null && a !== "") args.push(a);
+  }
+  if (name === "bt") {
+    const cmd = Object.entries(BT_CMD).find(([, v]) => v === Number(cell.param1));
+    if (cmd) args[0] = cmd[0];
+    if (args[0] === "BT_SEL" && args[1] == null) args[1] = String(Number(cell.param2) || 0);
+  }
+  if (name === "mmv" || name === "msc" || name === "mkp") {
+    const table = name === "mmv" ? MOUSE_MOVE : name === "msc" ? MOUSE_SCROLL : MOUSE_BTN;
+    const prefer = name === "mkp" ? ["LCLK", "RCLK", "MCLK", "MB4", "MB5"] : Object.keys(table);
+    const tok = nameFromTable(cell.param1, table, prefer);
+    if (tok) args[0] = tok;
   }
   if (name === "kp" && args.length > 1 && args[args.length - 1] === "0") args.pop();
   const text = args.length ? `&${name} ${args.join(" ")}` : `&${name}`;

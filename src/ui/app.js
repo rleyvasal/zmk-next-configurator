@@ -3571,6 +3571,13 @@ function loadEditorFromKeyboard(client, opts = {}) {
   };
 }
 
+function studioEncodeLayers() {
+  return (state.studio?.layers || []).map((l, i) => ({
+    id: l.id,
+    name: l.name || state.layers[i]?.id || "",
+  }));
+}
+
 function allFileBindings() {
   const out = [];
   for (let li = 0; li < state.layers.length; li++) {
@@ -3634,12 +3641,26 @@ const FLASH_COPY = {
 
 const FLASH_FOOT = "Download the keymap, put it in your firmware repo, and flash.";
 
-function showFlashNeeded(kind, name, { created = true } = {}) {
+function showFlashNeeded(kind, name, { created = true, line = "" } = {}) {
   const key = created ? kind : "params";
-  state.flashNotice = { kind: key, name, created };
+  state.flashNotice = { kind: key, name, created, line };
   updateFlashBanner();
   const copy = FLASH_COPY[key] || FLASH_COPY.params;
   setStatus(`${copy.title(name)} ${copy.status}.`);
+}
+
+function isFlashRequiredReason(reason) {
+  return /download.*flash|flash.*download|cannot be applied live|not live-editable|no Studio parameter metadata|not in this firmware/i.test(
+    String(reason || "")
+  );
+}
+
+function showFlashNeededForBinding(text, reason) {
+  const name = String(text || "").trim() || "This binding";
+  const line = /&mmv\b|&msc\b|mouse move|scroll|parameter metadata/i.test(`${name} ${reason || ""}`)
+    ? "Mouse move/scroll bindings cannot be applied live by this firmware."
+    : "This binding cannot be applied live.";
+  showFlashNeeded("params", name, { created: false, line });
 }
 
 function updateLayerOfflineBanner() {
@@ -3663,7 +3684,7 @@ function updateFlashBanner() {
   if (state.flashNotice) {
     const copy = FLASH_COPY[state.flashNotice.kind] || FLASH_COPY.params;
     if (titleEl) titleEl.textContent = copy.title(state.flashNotice.name);
-    if (text) text.textContent = `${copy.line} ${FLASH_FOOT}`;
+    if (text) text.textContent = `${state.flashNotice.line || copy.line} ${FLASH_FOOT}`;
     el.hidden = false;
     return;
   }
@@ -3692,8 +3713,9 @@ async function pumpLive() {
         setStatus(`${displayLayerName(state.layers[job.layer]?.id)} is not on this keyboard.`);
         continue;
       }
-      const result = await state.studio.setBinding(mapped, job.index, job.text);
+      const result = await state.studio.setBinding(mapped, job.index, job.text, studioEncodeLayers());
       if (!result.ok) {
+        if (isFlashRequiredReason(result.reason)) showFlashNeededForBinding(job.text, result.reason);
         setStatus(`On board skipped P${job.index}: ${result.reason}`);
         continue;
       }
@@ -3738,6 +3760,13 @@ async function connectOrDisconnect() {
     setStudioLabel("Connected", "on");
     $("session").classList.add("live");
     updateStudioButtons();
+    if (state.source === "file" || state.source === "github") {
+      updateChrome();
+      setStatus(
+        `Connected to ${client.deviceName}. Still ${sourceStatusText()}. Apply to push this keymap, or Load from Keyboard to read the board.`
+      );
+      return;
+    }
     if (state.dirty) {
       const discard = window.confirm(
         "Load from the keyboard and discard editor changes, including any layers not on the board?"
@@ -3791,6 +3820,7 @@ async function applyLiveAll() {
   setStatus("Applying file keymap to the board…");
   let ok = 0;
   const skipped = [];
+  const flashRequired = [];
   let extraKeys = 0;
   for (const job of jobs) {
     const mapped = studioLayerIndex(job.layer);
@@ -3798,24 +3828,35 @@ async function applyLiveAll() {
       extraKeys++;
       continue;
     }
-    const preview = bindingToCells(job.text, state.studio.behaviors, state.studio.layers);
+    const layers = studioEncodeLayers();
+    const preview = bindingToCells(job.text, state.studio.behaviors, layers);
     if (!preview.ok) {
-      skipped.push(`P${job.index} (${preview.reason})`);
+      skipped.push(`${job.text} L${job.layer} P${job.index} (${preview.reason})`);
+      if (isFlashRequiredReason(preview.reason)) flashRequired.push({ text: job.text, reason: preview.reason });
       continue;
     }
-    const result = await state.studio.setBinding(mapped, job.index, job.text);
-    if (!result.ok) skipped.push(`P${job.index} (${result.reason})`);
+    const result = await state.studio.setBinding(mapped, job.index, job.text, layers);
+    if (!result.ok) {
+      skipped.push(`${job.text} L${job.layer} P${job.index} (${result.reason})`);
+      if (isFlashRequiredReason(result.reason)) flashRequired.push({ text: job.text, reason: result.reason });
+    }
     else ok++;
   }
   if (ok) {
     await state.studio.save();
     warnLiveOnce();
     await state.studio.getKeymap();
-    loadEditorFromKeyboard(state.studio, { replace: false });
+    rememberDeviceLayers(state.studio);
+    updateChrome();
   }
+  if (flashRequired.length) showFlashNeededForBinding(flashRequired[0].text, flashRequired[0].reason);
+  const mouseSkip = skipped.filter((s) => /&mmv\b|&msc\b/.test(s));
   setStatus(
     `Wrote ${ok} keys from this file onto the board.` +
       (skipped.length ? ` Skipped ${skipped.length}: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? "…" : ""}` : "") +
+      (mouseSkip.length
+        ? " Mouse move/scroll are not live-editable by this firmware because those behaviors expose no Studio parameter metadata; Download and flash the keymap to change them."
+        : "") +
       (extraKeys
         ? ` Left ${extraKeys} key(s) on ${extra.join(", ")} in the editor — Apply cannot add a new layer over USB. Download keymap and flash.`
         : "")

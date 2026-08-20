@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Map</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=40" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=47" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -69,8 +69,8 @@
           <div>Click a key to inspect its behavior.</div>
         </div>
         <p class="flash-hint">
-          <strong>Live Apply</strong> works for existing bindings only.
-          New macros, combos, layers, and behaviors require Download → flash.
+        <strong>Live Apply</strong> works for existing bindings only.
+          New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.
         </p>
         <div id="color-legend" class="color-legend" aria-label="Key colors">
           <span><i class="lg-sel"></i>Selected</span>
@@ -506,9 +506,9 @@
     </div>
     <div class="status" id="status">Load a keymap to begin.</div>
     <script type="module">
-      import { applyTheme } from "../../src/ui/theme.js?v=40";
+      import { applyTheme } from "../../src/ui/theme.js?v=47";
       applyTheme();
-      import("../../src/ui/app.js?v=40").catch((err) => {
+      import("../../src/ui/app.js?v=47").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

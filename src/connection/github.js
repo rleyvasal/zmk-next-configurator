@@ -1,6 +1,27 @@
 /**
- * Public GitHub helpers: parse a pasted URL, list a repo tree, fetch raw files.
+ * Public GitHub helpers: parse a pasted URL, list a repo tree, fetch files.
  */
+
+function githubContentsUrl(owner, repo, branch, path) {
+  const segments = String(path || "")
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${segments}?ref=${encodeURIComponent(branch)}`;
+}
+
+function decodeGithubBase64(content) {
+  const binary = atob(String(content).replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function isNetworkError(err) {
+  const message = String(err?.message || err || "");
+  return err instanceof TypeError || /networkerror|failed to fetch|load failed|fetch resource|cors/i.test(message);
+}
 
 export function parseGithubInput(raw) {
   let s = String(raw || "").trim();
@@ -39,10 +60,36 @@ export async function githubRepoTree(owner, repo, branch) {
 }
 
 export async function githubRawFile(owner, repo, branch, path) {
-  const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`GitHub ${res.status}: ${owner}/${repo}/${path}`);
-  return res.text();
+  const label = `${owner}/${repo}/${path}`;
+  const rawUrl = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${String(path)
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/")}`;
+
+  try {
+    const res = await fetch(rawUrl);
+    if (res.ok) return await res.text();
+  } catch {
+    // Some networks allow api.github.com but block raw.githubusercontent.com.
+  }
+
+  try {
+    const res = await fetch(githubContentsUrl(owner, repo, branch, path));
+    if (res.status === 403) throw new Error("GitHub rate limit. Wait a minute and try again.");
+    if (res.status === 404) throw new Error(`GitHub 404: ${label}`);
+    if (!res.ok) throw new Error(`GitHub ${res.status}: ${label}`);
+    const data = await res.json();
+    if (data?.encoding !== "base64" || typeof data.content !== "string") {
+      throw new Error(`GitHub returned an unsupported file format: ${label}`);
+    }
+    return decodeGithubBase64(data.content);
+  } catch (err) {
+    if (!isNetworkError(err)) throw err;
+    throw new Error(
+      `Could not download ${label} from GitHub. The raw GitHub file host may be blocked by this network; try again or use Load from File.`,
+    );
+  }
 }
 
 export async function listGithubFiles(owner, repo, preferredBranch) {

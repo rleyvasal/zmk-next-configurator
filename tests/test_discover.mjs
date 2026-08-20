@@ -10,7 +10,7 @@ import {
   parseDtsiLayout,
   profileFromDtsi,
 } from "../src/layouts/layout.js";
-import { parseGithubInput } from "../src/connection/github.js";
+import { githubRawFile, parseGithubInput } from "../src/connection/github.js";
 
 const builtins = [
   { id: "totem", name: "Totem" },
@@ -117,6 +117,39 @@ if (blob.path !== "config/foo.keymap" || blob.branch !== "main") throw new Error
 const local = parseGithubInput("/Users/admin/totem-zmk-config");
 if (local.local !== "/Users/admin/totem-zmk-config") throw new Error(JSON.stringify(local));
 if (parseGithubInput("just-one-word")) throw new Error("single token should be invalid");
+
+const savedFetch = globalThis.fetch;
+try {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (calls.length === 1) throw new TypeError("NetworkError when attempting to fetch resource.");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ encoding: "base64", content: Buffer.from("bindings = < &kp A >;\n").toString("base64") }),
+    };
+  };
+  const fallbackText = await githubRawFile("rleyvasal", "totem-zmk-config", "main", "config/totem.keymap");
+  if (fallbackText !== "bindings = < &kp A >;\n") throw new Error("GitHub API file fallback decoded incorrectly");
+  if (!calls[1].includes("api.github.com/repos/rleyvasal/totem-zmk-config/contents/config/totem.keymap?ref=main")) {
+    throw new Error(`GitHub API file fallback URL ${calls[1]}`);
+  }
+
+  globalThis.fetch = async () => {
+    throw new TypeError("NetworkError when attempting to fetch resource.");
+  };
+  try {
+    await githubRawFile("owner", "repo", "main", "config/keymap.keymap");
+    throw new Error("GitHub network failure should be reported");
+  } catch (err) {
+    if (!/raw GitHub file host may be blocked|Load from File/.test(err.message)) {
+      throw new Error(`GitHub network error message ${err.message}`);
+    }
+  }
+} finally {
+  globalThis.fetch = savedFetch;
+}
 
 function walkFiles(dir, acc = [], prefix = "") {
   for (const name of readdirSync(dir)) {

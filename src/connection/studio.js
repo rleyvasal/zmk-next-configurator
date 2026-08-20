@@ -17,7 +17,7 @@ import {
   fieldU32,
   unzigzag32,
 } from "./pb.js";
-import { bindingToCells } from "./studio-bind.js";
+import { bindingToCells, rememberStudioBehaviors } from "./studio-bind.js";
 
 const SOF = 0xab;
 const ESC = 0xac;
@@ -98,12 +98,17 @@ function parseParamDesc(fields) {
 
 function parseBehaviorDetails(fields) {
   const sets = fieldMsgs(fields, 3);
-  const first = sets[0] || new Map();
+  const param1 = [];
+  const param2 = [];
+  for (const set of sets.length ? sets : [new Map()]) {
+    param1.push(...fieldMsgs(set, 1).map(parseParamDesc));
+    param2.push(...fieldMsgs(set, 2).map(parseParamDesc));
+  }
   return {
     id: fieldU32(fields, 1),
     displayName: fieldStr(fields, 2),
-    param1: fieldMsgs(first, 1).map(parseParamDesc),
-    param2: fieldMsgs(first, 2).map(parseParamDesc),
+    param1,
+    param2,
   };
 }
 
@@ -161,7 +166,13 @@ function parseResponse(bytes) {
   if (keymap) {
     const km = fieldMsgs(keymap, 1)[0];
     if (km) out.keymap = parseKeymap(km);
-    if (fieldNums(keymap, 2).length) out.setLayerBinding = fieldU32(keymap, 2);
+    // SetLayerBindingResponse is a message whose `result` enum is field 1.
+    // It is not the enum directly on the keymap subsystem response. The
+    // direct numeric fallback keeps this parser tolerant of old/nonstandard
+    // firmware that flattened the response.
+    const setBinding = fieldMsgs(keymap, 2)[0];
+    if (setBinding) out.setLayerBinding = fieldU32(setBinding, 1);
+    else if (fieldNums(keymap, 2).length) out.setLayerBinding = fieldU32(keymap, 2);
     const save = fieldMsgs(keymap, 4)[0];
     if (save) {
       out.saveOk = fieldU32(save, 1) === 1 || fieldMsgs(save, 1).length > 0 || fieldU32(save, 1) > 0;
@@ -277,13 +288,14 @@ export class StudioClient {
   async getKeymap() {
     const km = await this.call((id) => encodeKeymap(id, 1), 10000);
     this.layers = km.keymap?.layers || [];
+    this.inferredBehaviors = rememberStudioBehaviors(this.behaviors, this.layers);
     return this.layers;
   }
 
-  async setBinding(layerIndex, keyPosition, text) {
+  async setBinding(layerIndex, keyPosition, text, layers = this.layers) {
     const layer = this.layers[layerIndex];
     if (!layer) throw new Error(`No Studio layer ${layerIndex}`);
-    const mapped = bindingToCells(text, this.behaviors, this.layers);
+    const mapped = bindingToCells(text, this.behaviors, layers);
     if (!mapped.ok) return mapped;
     const body = concatBytes([
       encodeUint32(1, layer.id),
