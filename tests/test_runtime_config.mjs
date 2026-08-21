@@ -154,6 +154,25 @@ if (
 ) {
   throw new Error(`runtime draft ${JSON.stringify(editorDraft)}`);
 }
+const mouseBehaviors = [
+  ...draftBehaviors,
+  { id: 40, displayName: "Move Mouse", param1: [], param2: [] },
+  { id: 41, displayName: "Mouse Scroll", param1: [], param2: [] },
+];
+const mouseDraft = replaceDraftKeymapOverrides({
+  snapshot,
+  capabilities: { ...draftCapabilities, limits: { maxKeymapOverrides: 6 } },
+  editorLayers: [{ bindings: [{ text: "&kp A" }, { text: "&msc SCRL_UP" }, { text: "&mmv MOVE_LEFT" }] }],
+  deviceLayerIds: [0],
+  behaviors: mouseBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (mouseDraft.keymapOverrides.length !== 1 || mouseDraft.keymapOverrides[0].keyPosition !== 2) {
+  throw new Error(`mouse-axis keys must stay compiled ${JSON.stringify(mouseDraft.keymapOverrides)}`);
+}
+if ((mouseDraft.skippedBindings || []).length !== 2) {
+  throw new Error(`mouse skips ${JSON.stringify(mouseDraft.skippedBindings)}`);
+}
 let draftRejected = false;
 try {
   replaceDraftKeymapOverrides({

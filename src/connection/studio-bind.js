@@ -540,7 +540,7 @@ export function bindingToCells(text, behaviors, layers) {
   // though the behavior is listed and the numeric value is easy to encode.
   // Treat that as a flash-only binding instead of reporting a false live
   // success and leaving the user with an apparently empty key.
-  if ((parsed.name === "mmv" || parsed.name === "msc") && !behavior.param1?.length && !behavior.param2?.length) {
+  if (isFlashOnlyMouseAxis(parsed, behavior)) {
     return { ok: false, reason: `behavior &${parsed.name} has no Studio parameter metadata; download and flash this change` };
   }
   const p1 = paramKinds(behavior.param1);
@@ -556,6 +556,17 @@ export function bindingToCells(text, behaviors, layers) {
   } catch (err) {
     return { ok: false, reason: err.message };
   }
+}
+
+export function isFlashOnlyMouseAxis(parsed, behavior) {
+  if (!parsed || (parsed.name !== "mmv" && parsed.name !== "msc")) return false;
+  return !behavior?.param1?.length && !behavior?.param2?.length;
+}
+
+export function isFlashOnlyMouseBinding(text, behaviors) {
+  const parsed = parseBindingText(text);
+  if (!parsed) return false;
+  return isFlashOnlyMouseAxis(parsed, findBehavior(behaviors, parsed.name));
 }
 
 export function canApplyLive(text, behaviors, layers) {

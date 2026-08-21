@@ -1,4 +1,4 @@
-import { bindingToCells, cellsToBinding, parseBindingText } from "./studio-bind.js";
+import { bindingToCells, cellsToBinding, isFlashOnlyMouseBinding, parseBindingText } from "./studio-bind.js";
 import {
   HOLD_TAP_FLAVOR,
   RUNTIME_OBJECT_TYPE,
@@ -621,20 +621,18 @@ export function replaceDraftKeymapOverrides({
           }),
         });
       } catch (error) {
-        issues.push({
-          layerIndex,
-          position,
-          text,
-          reason: error instanceof RuntimeDraftError ? error.message : String(error.message || error),
-        });
+        const reason = error instanceof RuntimeDraftError ? error.message : String(error.message || error);
+        issues.push({ layerIndex, position, text, reason });
       }
     }
   }
 
-  if (issues.length) {
-    const first = issues[0];
+  const skippedBindings = issues.filter((issue) => isFlashOnlyMouseBinding(issue.text, behaviors));
+  const fatal = issues.filter((issue) => !isFlashOnlyMouseBinding(issue.text, behaviors));
+  if (fatal.length) {
+    const first = fatal[0];
     const where = first.position == null ? `layer ${first.layerIndex}` : `L${first.layerIndex} P${first.position}`;
-    throw new RuntimeDraftError(`Cannot build Runtime Config draft at ${where}: ${first.reason}`, issues);
+    throw new RuntimeDraftError(`Cannot build Runtime Config draft at ${where}: ${first.reason}`, fatal);
   }
 
   const limit = Number(capabilities?.limits?.maxKeymapOverrides);
@@ -645,5 +643,9 @@ export function replaceDraftKeymapOverrides({
   }
 
   draft.keymapOverrides = overrides;
+  Object.defineProperty(draft, "skippedBindings", {
+    value: skippedBindings,
+    enumerable: false,
+  });
   return draft;
 }

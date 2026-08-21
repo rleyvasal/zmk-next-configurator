@@ -4022,6 +4022,10 @@ async function applyRuntimeAll() {
     }
     throw error;
   }
+  const skippedBindings = draft.skippedBindings || [];
+  if (skippedBindings[0]?.text) {
+    showFlashNeededForBinding(skippedBindings[0].text, skippedBindings[0].reason);
+  }
 
   const usage = runtimeResourceUsage(draft);
   const over = runtimeResourceOverLimit(usage, state.runtime.capabilities);
@@ -4034,8 +4038,11 @@ async function applyRuntimeAll() {
     (over ? `\n\nThis draft exceeds firmware limits: ${over}` : "") +
     (skipped.length
       ? `\n\n${skipped.join(", ")} cannot be added live and will remain editor-only. Download and flash to add ${skipped.length === 1 ? "it" : "them"}.`
+      : "") +
+    (skippedBindings.length
+      ? `\n\n${skippedBindings.length} mouse-move/scroll key${skippedBindings.length === 1 ? "" : "s"} stay firmware-compiled (no Studio parameter metadata).`
       : "");
-  if ((state.settings.confirmApply || skipped.length || over) && !window.confirm(prompt)) {
+  if ((state.settings.confirmApply || skipped.length || skippedBindings.length || over) && !window.confirm(prompt)) {
     setStatus("Apply cancelled.");
     return;
   }
