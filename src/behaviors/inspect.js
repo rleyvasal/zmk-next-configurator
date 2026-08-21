@@ -155,6 +155,7 @@ export function classifyBinding(model, ctx = {}) {
   if (MOUSE.has(b)) return "mouse";
   if (EMPTY.has(b)) return "empty";
   if (b === "sys_reset") return "zero";
+  if (b === "rt") return "runtime";
   const macros = ctx.macros || [];
   if (macros.some((m) => !m.deleted && m.id === b)) return "macro";
   const behaviors = ctx.behaviors || [];

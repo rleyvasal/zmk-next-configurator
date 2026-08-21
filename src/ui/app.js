@@ -74,7 +74,28 @@ import {
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio } from "../connection/studio.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
-import { RuntimeDraftError, replaceDraftKeymapOverrides } from "../connection/runtime-draft.js";
+import { HOLD_TAP_FLAVOR, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
+import {
+  RuntimeDraftError,
+  RUNTIME_MODIFIERS,
+  bindingTextFromAction,
+  createRuntimeDraft,
+  deleteRuntimeCombo,
+  deleteRuntimeObject,
+  findRuntimeCombo,
+  findRuntimeObject,
+  nextRuntimeComboId,
+  nextRuntimeObjectId,
+  parseRuntimeObjectId,
+  replaceDraftKeymapOverrides,
+  runtimeBindingText,
+  runtimeObjectReferences,
+  runtimeResourceUsage,
+  stockPositionsToSelectedIndexes,
+  supportedRuntimeEditorTypes,
+  upsertRuntimeCombo,
+  upsertRuntimeObject,
+} from "../connection/runtime-draft.js";
 import {
   parseBinding,
   formatBinding,
@@ -93,6 +114,21 @@ applyTheme();
 const DRAG_CLEAR_PX = 16;
 
 const $ = (id) => document.getElementById(id);
+
+function runtimeObjectShortLabel(object) {
+  const prefix = { holdTap: "HT", macro: "M", modMorph: "MM", tapDance: "TD" }[object?.type] || "RT";
+  return object ? `${prefix}${object.id}` : "RT";
+}
+
+function prettyBindingLabel(text) {
+  const object = findRuntimeObject(state.runtime?.draft, parseRuntimeObjectId(text));
+  return object ? runtimeObjectShortLabel(object) : bindingLabel(text);
+}
+
+function inspectBehaviorValue(model) {
+  if (model?.behavior === "rt") return `rt:${model.args?.[0] || model.key || ""}`;
+  return model?.behavior;
+}
 
 const state = {
   original: "",
@@ -131,6 +167,7 @@ const state = {
   macroDraft: null,
   combinationDraft: null,
   combinationFilter: "all",
+  runtimeEditor: null,
   deviceLayerCount: 0,
   flashNotice: null,
 };
@@ -214,7 +251,7 @@ function updateStudioButtons() {
   const hint = $("live-hint");
   if (hint) {
     hint.innerHTML = state.runtime
-      ? "<strong>Runtime Config</strong> saves one complete configuration, including its ordinary keymap overlay. It activates only after the keyboard is idle. Runtime object editors are being added incrementally."
+      ? "<strong>Runtime Config</strong> saves one complete snapshot: ordinary keys plus runtime macros, combos, hold-taps, mod-morphs, and tap-dances. Edits stay local until Apply, then activate only when the keyboard is idle."
       : "<strong>Live Apply</strong> works for existing bindings only. New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.";
   }
 }
@@ -665,6 +702,13 @@ function inspectBehaviorChoices() {
       "Hold-tap",
       state.behaviors.filter((b) => !b.deleted && b.kind === "hold-tap").map((b) => [b.id, `&${b.id}`]),
     ],
+    [
+      "Runtime objects",
+      (state.runtime?.draft?.runtimeObjects || []).map((object) => [
+        `rt:${object.id}`,
+        `${runtimeObjectShortLabel(object)} · &rt ${object.id}`,
+      ]),
+    ],
     ["Macros", state.macros.filter((m) => !m.deleted).map((m) => [m.id, `&${m.id}`])],
     [
       "Mouse",
@@ -771,7 +815,7 @@ function renderInspect(force = false) {
   const head = document.createElement("div");
   head.className = "inspect-head";
   const left = document.createElement("div");
-  left.innerHTML = `<span class="inspect-pos">P${idx}</span><span class="inspect-layer">${layerLabel}</span><span class="inspect-pretty" id="inspect-pretty">${bindingLabel(text)}</span>${state.selected.size > 1 ? ` <span class="inspect-layer">+${state.selected.size - 1}</span>` : ""}`;
+  left.innerHTML = `<span class="inspect-pos">P${idx}</span><span class="inspect-layer">${layerLabel}</span><span class="inspect-pretty" id="inspect-pretty">${prettyBindingLabel(text)}</span>${state.selected.size > 1 ? ` <span class="inspect-layer">+${state.selected.size - 1}</span>` : ""}`;
   const raw = document.createElement("code");
   raw.id = "inspect-raw";
   raw.className = "inspect-raw";
@@ -794,15 +838,15 @@ function renderInspect(force = false) {
       const opt = document.createElement("option");
       opt.value = id;
       opt.textContent = label;
-      if (id === model.behavior) opt.selected = true;
+      if (id === inspectBehaviorValue(model)) opt.selected = true;
       og.appendChild(opt);
     }
     beh.appendChild(og);
   }
-  if (![...beh.options].some((o) => o.value === model.behavior)) {
+  if (![...beh.options].some((o) => o.value === inspectBehaviorValue(model))) {
     const opt = document.createElement("option");
-    opt.value = model.behavior;
-    opt.textContent = `&${model.behavior}`;
+    opt.value = inspectBehaviorValue(model);
+    opt.textContent = `&${model.behavior}${model.behavior === "rt" ? ` ${model.args?.[0] || model.key || ""}` : ""}`;
     opt.selected = true;
     beh.appendChild(opt);
   }
@@ -975,6 +1019,15 @@ function renderInspect(force = false) {
     btn.addEventListener("click", () => openBehaviorEditor(behavior));
     actions.appendChild(btn);
   }
+  const runtimeId = parseRuntimeObjectId(text);
+  const runtimeObject = runtimeId ? findRuntimeObject(state.runtime?.draft, runtimeId) : null;
+  if (runtimeObject) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `Edit ${runtimeObjectShortLabel(runtimeObject)}`;
+    btn.addEventListener("click", () => openRuntimeEditor({ type: runtimeObject.type, object: runtimeObject }));
+    actions.appendChild(btn);
+  }
   const clear = document.createElement("button");
   clear.type = "button";
   clear.textContent = "Clear";
@@ -1023,7 +1076,14 @@ function renderInspect(force = false) {
 function onInspectBehaviorChange() {
   const idx = [...state.selected][0];
   if (idx == null) return;
-  const next = convertBinding(parseBinding(currentBindings()[idx]?.text || "&trans"), $("inspect-behavior").value, inspectContext());
+  const nextBehavior = $("inspect-behavior").value;
+  if (nextBehavior.startsWith("rt:")) {
+    const text = runtimeBindingText(nextBehavior.slice(3));
+    for (const i of state.selected) assignBinding(i, text, { quiet: true, skipInspect: true });
+    renderInspect(true);
+    return;
+  }
+  const next = convertBinding(parseBinding(currentBindings()[idx]?.text || "&trans"), nextBehavior, inspectContext());
   for (const i of state.selected) assignBinding(i, next, { quiet: true, skipInspect: true });
   renderInspect(true);
 }
@@ -1074,7 +1134,7 @@ function bindBoardDeselect() {
   const wrap = document.querySelector(".kb-wrap");
   if (!wrap) return;
   wrap.addEventListener("pointerdown", (ev) => {
-    if (state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft) return;
+    if (state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft || state.runtimeEditor) return;
     if (ev.button != null && ev.button !== 0) return;
     if (keyIndexFromPoint(ev.clientX, ev.clientY) != null) return;
     state.bgClick = { x: ev.clientX, y: ev.clientY };
@@ -1091,7 +1151,7 @@ function bindBoardDeselect() {
 }
 
 function setEditingMode() {
-  const on = !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft);
+  const on = !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.combinationDraft || state.runtimeEditor);
   const board = document.querySelector(".board");
   board?.classList.toggle("editing", on);
   board?.classList.toggle("click-palette", paletteIsClickToAdd());
@@ -1104,6 +1164,12 @@ function bindingTint(text, index) {
   const ctx = inspectContext();
   const kind = classifyBinding(model, ctx);
   if (kind === "macro") return "kind-macro";
+  if (kind === "runtime") {
+    const object = findRuntimeObject(state.runtime?.draft, parseRuntimeObjectId(text));
+    if (object?.type === "macro") return "kind-macro";
+    if (object?.type === "holdTap") return "kind-holdtap";
+    if (object?.type === "modMorph" || object?.type === "tapDance") return "kind-other";
+  }
   if (isLayerHoldBinding(model) || kind === "layer" || kind === "layer-tap") return "kind-layerhold";
   if (kind === "hold-tap" || isHomeRowBinding(model, ctx)) return "kind-holdtap";
   const custom = (state.behaviors || []).find((b) => !b.deleted && b.id === model.behavior);
@@ -1111,6 +1177,9 @@ function bindingTint(text, index) {
   if (
     state.combos.some(
       (c) => !c.deleted && c.positions.includes(index) && comboActiveOnLayer(c, state.layer)
+    ) ||
+    state.runtime?.draft?.combos.some((combo) =>
+      stockPositionsToSelectedIndexes(state.runtime.capabilities, combo.keyPositions).includes(index)
     )
   ) {
     return "kind-combo";
@@ -1251,6 +1320,9 @@ function renderKeyboard() {
     if (!state.behaviorDraft && state.selected.has(i)) rect.classList.add("selected");
     if (state.comboDraft?.positions.includes(i)) rect.classList.add("combo-member");
     if (state.combinationDraft?.triggers.some((t) => t.index === i)) rect.classList.add("combo-member");
+    if (state.runtimeEditor?.type === "combo" && state.runtimeEditor.triggers.includes(i)) {
+      rect.classList.add("combo-member");
+    }
     if (state.behaviorDraft?.triggerPositions.includes(i) && isOppositeTrigger(state.behaviorDraft, i)) {
       rect.classList.add("trigger-member");
     }
@@ -1268,7 +1340,7 @@ function renderKeyboard() {
     }
     rect.dataset.index = String(i);
 
-    const formatted = formatKeyLabel(displayBindingText(bindings[i]));
+    const formatted = formatKeyLabel(prettyBindingLabel(displayBindingText(bindings[i])));
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.setAttribute("class", "key-label");
     label.setAttribute("text-anchor", "middle");
@@ -1310,7 +1382,7 @@ function renderKeyboard() {
     rect.addEventListener("pointerdown", (ev) => startKeyDrag(ev, i));
     svg.appendChild(g);
   });
-  svg.classList.toggle("picking", !!(state.comboDraft || state.behaviorDraft || state.macroDraft));
+  svg.classList.toggle("picking", !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.runtimeEditor));
 }
 
 function keyIndexFromPoint(clientX, clientY) {
@@ -1328,7 +1400,7 @@ function keyIndexFromPoint(clientX, clientY) {
 }
 
 function paletteIsClickToAdd() {
-  return !!(state.combinationDraft || state.comboDraft || state.macroDraft);
+  return !!(state.combinationDraft || state.comboDraft || state.macroDraft || state.runtimeEditor);
 }
 
 function startPaletteDrag(ev, item) {
@@ -1418,6 +1490,10 @@ function fillHoldSelects() {
 
 function startKeyDrag(ev, index) {
   ev.preventDefault();
+  if (state.runtimeEditor) {
+    handleRuntimeEditorKey(index);
+    return;
+  }
   if (state.combinationDraft) {
     toggleBuilderTrigger(index);
     return;
@@ -1703,6 +1779,7 @@ function renderCombos() {
 }
 
 function combinationEntries() {
+  if (state.runtime) return runtimeCombinationEntries();
   const draft = state.combinationDraft;
   const draftId = draft?.source?.item?.id;
   const items = [];
@@ -1745,6 +1822,7 @@ function combinationEntries() {
 }
 
 function renderCombinations() {
+  renderRuntimeChrome();
   const wrap = $("combinations");
   if (!wrap) return;
   wrap.replaceChildren();
@@ -1752,7 +1830,9 @@ function renderCombinations() {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "combo-meta";
-    empty.textContent = "No combinations on this layer.";
+    empty.textContent = state.runtime
+      ? "No runtime objects in this draft. New ones stay local until Apply."
+      : "No combinations on this layer.";
     wrap.appendChild(empty);
     return;
   }
@@ -1780,12 +1860,20 @@ function renderCombinations() {
 }
 
 function deleteCombinationItem(item) {
+  if (item.runtime) {
+    deleteRuntimeEditorItem(item);
+    return;
+  }
   if (item.type === "combo") deleteCombo(item.source);
   else if (item.type === "macro") deleteMacro(item.source);
   else deleteBehavior(item.source);
 }
 
 function openCombinationItem(item) {
+  if (item.runtime) {
+    openRuntimeEditor(item);
+    return;
+  }
   if (item.type === "combo") {
     openCombinationBuilder({ type: "combo", item: item.source });
     return;
@@ -1830,6 +1918,8 @@ function syncBuilderSteps() {
 }
 
 function closeOtherEditors() {
+  if (state.runtimeEditor) closeRuntimeEditor();
+  if (state.combinationDraft) closeCombinationBuilder();
   if (state.comboDraft) closeComboDialog();
   if (state.macroDraft) closeMacroEditor();
   if (state.behaviorDraft) closeBehaviorEditor();
@@ -3409,6 +3499,10 @@ function toggleBehaviorKey(index) {
 }
 
 function applyToSelected(text) {
+  if (state.runtimeEditor) {
+    fillRuntimeEditorFromPalette(text);
+    return;
+  }
   if (state.combinationDraft) {
     addBuilderOutput(text);
     return;
@@ -3499,10 +3593,11 @@ function decodeStudioLayerBindings(studioLayer, behaviors, named) {
 }
 
 function closeOpenEditors() {
+  if (state.runtimeEditor) closeRuntimeEditor();
   if (state.combinationDraft) closeCombinationBuilder();
   if (state.comboDraft) closeComboDialog();
-  if (state.macroDraft) closeMacroEditor();
   if (state.behaviorDraft) closeBehaviorEditor();
+  if (state.macroDraft) closeMacroEditor();
 }
 
 function loadEditorFromKeyboard(client, opts = {}) {
@@ -3770,7 +3865,12 @@ async function probeRuntimeConfig(client) {
       // Keep the established Studio path available instead of guessing.
       return null;
     }
-    return { capabilities, snapshot: config.snapshot, status: config.status };
+    return {
+      capabilities,
+      snapshot: config.snapshot,
+      status: config.status,
+      draft: createRuntimeDraft(config.snapshot),
+    };
   } catch {
     // Runtime Config is an optional ZMK Next subsystem. Ordinary Studio
     // firmware deliberately keeps its existing connection path untouched.
@@ -3783,11 +3883,13 @@ async function connectOrDisconnect() {
     await state.studio.close();
     state.studio = null;
     state.runtime = null;
+    closeRuntimeEditor();
     state.deviceLayerCount = 0;
     setStudioLabel("Not connected");
     $("session").classList.remove("live");
     updateStudioButtons();
     renderLayers();
+    renderCombinations();
     updateLayerOfflineBanner();
     setStatus("Disconnected from keyboard.");
     return;
@@ -3802,6 +3904,7 @@ async function connectOrDisconnect() {
     setStudioLabel(state.runtime ? "Connected · Runtime Config ready" : "Connected", "on");
     $("session").classList.add("live");
     updateStudioButtons();
+    renderCombinations();
     if (state.source === "file" || state.source === "github") {
       updateChrome();
       setStatus(
@@ -3881,7 +3984,7 @@ async function applyRuntimeAll() {
   let draft;
   try {
     draft = replaceDraftKeymapOverrides({
-      snapshot: state.runtime.snapshot,
+      snapshot: state.runtime.draft || state.runtime.snapshot,
       capabilities: state.runtime.capabilities,
       editorLayers,
       deviceLayerIds,
@@ -3902,9 +4005,11 @@ async function applyRuntimeAll() {
   const { validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
     expectedActiveGeneration: state.runtime.snapshot.generation,
   });
+  const nextSnapshot = createRuntimeDraft({ ...draft, generation: commit.generation });
   state.runtime = {
     ...state.runtime,
-    snapshot: state.studio.runtimeSnapshot,
+    snapshot: nextSnapshot,
+    draft: createRuntimeDraft(nextSnapshot),
     status: commit.status || state.studio.runtimeStatus,
   };
   const pending = state.runtime.status?.pendingGeneration === commit.generation;
@@ -3913,11 +4018,15 @@ async function applyRuntimeAll() {
     "on"
   );
   updateStudioButtons();
-  const usage = validation.resourceUsage?.keymapOverrides;
+  renderCombinations();
+  const usage = validation.resourceUsage;
+  const usageNote = usage
+    ? ` Objects ${usage.runtimeObjects?.used ?? runtimeResourceUsage(nextSnapshot).runtimeObjects}/${usage.runtimeObjects?.limit || "?"}, combos ${usage.combos?.used ?? runtimeResourceUsage(nextSnapshot).combos}/${usage.combos?.limit || "?"}.`
+    : "";
   setStatus(
     `Saved Runtime Config generation ${commit.generation}` +
       (pending ? "; waiting for keyboard idle before activation." : " and activated.") +
-      (usage?.limit ? ` Keymap overrides: ${usage.used}/${usage.limit}.` : "")
+      usageNote
   );
 }
 
@@ -3935,9 +4044,21 @@ async function restoreRuntimeStock() {
   const reset = await state.studio.resetRuntimeConfig({
     expectedActiveGeneration: state.runtime.snapshot.generation,
   });
+  const empty = createRuntimeDraft(
+    state.studio.runtimeSnapshot || {
+      persistenceSchemaVersion: state.runtime.capabilities.persistenceSchemaVersion,
+      generation: reset.generation,
+      capabilityFingerprint: state.runtime.capabilities.capabilityFingerprint,
+      keymapOverrides: [],
+      layers: [],
+      runtimeObjects: [],
+      combos: [],
+    }
+  );
   state.runtime = {
     ...state.runtime,
-    snapshot: state.studio.runtimeSnapshot,
+    snapshot: empty,
+    draft: createRuntimeDraft(empty),
     status: reset.status || state.studio.runtimeStatus,
   };
   const pending = state.runtime.status?.pendingGeneration === reset.generation;
@@ -3946,11 +4067,569 @@ async function restoreRuntimeStock() {
     "on"
   );
   updateStudioButtons();
+  renderCombinations();
   setStatus(
     `Saved stock Runtime Config generation ${reset.generation}` +
       (pending ? "; waiting for keyboard idle before activation." : ".") +
       " The editor still shows your local keymap."
   );
+}
+
+function runtimeEncodeOpts() {
+  return {
+    behaviors: state.studio?.behaviors,
+    studioLayers: studioEncodeLayers(),
+  };
+}
+
+function runtimeCombinationEntries() {
+  const draft = state.runtime?.draft;
+  if (!draft) return [];
+  const caps = state.runtime.capabilities;
+  const items = [];
+  for (const object of draft.runtimeObjects) {
+    items.push({
+      runtime: true,
+      type: object.type,
+      id: object.id,
+      title: `&rt ${object.id}`,
+      detail: runtimeObjectDetail(object),
+      tint:
+        object.type === "macro"
+          ? "kind-macro"
+          : object.type === "holdTap"
+            ? "kind-holdtap"
+            : object.type === "combo"
+              ? "kind-combo"
+              : "kind-other",
+      source: object,
+    });
+  }
+  for (const combo of draft.combos) {
+    const selected = stockPositionsToSelectedIndexes(caps, combo.keyPositions);
+    items.push({
+      runtime: true,
+      type: "combo",
+      id: combo.id,
+      title: selected.map((index) => comboKeyCaption(index)).join(" + ") || `Combo ${combo.id}`,
+      detail: prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
+      tint: "kind-combo",
+      source: combo,
+    });
+  }
+  const filter = state.combinationFilter || "all";
+  return filter === "all" ? items : items.filter((item) => item.type === filter);
+}
+
+function runtimeObjectDetail(object) {
+  if (object.type === "macro") return `Macro · ${object.steps?.length || 0} steps`;
+  if (object.type === "holdTap") return `Hold-tap · ${object.tappingTermMs}ms`;
+  if (object.type === "modMorph") return "Mod-morph";
+  if (object.type === "tapDance") return `Tap-dance · ${object.actions?.length || 0} counts`;
+  return object.type;
+}
+
+function renderRuntimeChrome() {
+  const title = $("combinations-title");
+  const usage = $("runtime-usage");
+  const filters = $("combo-filters");
+  if (title) title.textContent = state.runtime ? "Runtime objects" : "Combinations";
+  if (usage) {
+    usage.hidden = !state.runtime;
+    if (state.runtime) {
+      const used = runtimeResourceUsage(state.runtime.draft);
+      const limits = state.runtime.capabilities?.limits || {};
+      usage.textContent = `Draft ${used.runtimeObjects}/${limits.maxRuntimeObjects || "?"} objects · ${used.combos}/${limits.maxCombos || "?"} combos · ${used.macroSteps}/${limits.maxMacroSteps || "?"} macro steps. Apply to save on the keyboard.`;
+    }
+  }
+  if (!filters) return;
+  const current = state.combinationFilter || "all";
+  const buttons = state.runtime
+    ? [
+        ["all", "All"],
+        ...supportedRuntimeEditorTypes(state.runtime.capabilities).map((type) => [
+          type,
+          { holdTap: "Hold-taps", macro: "Macros", combo: "Combos", modMorph: "Mod-morphs", tapDance: "Tap-dances" }[type] || type,
+        ]),
+      ]
+    : [
+        ["all", "All"],
+        ["hold-tap", "Hold-taps"],
+        ["combo", "Combos"],
+        ["macro", "Macros"],
+      ];
+  if ([...filters.querySelectorAll("[data-filter]")].map((btn) => btn.dataset.filter).join() !== buttons.map(([id]) => id).join()) {
+    filters.replaceChildren();
+    for (const [id, label] of buttons) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.filter = id;
+      btn.textContent = label;
+      if (id === current) btn.classList.add("on");
+      filters.appendChild(btn);
+    }
+    if (!buttons.some(([id]) => id === current)) state.combinationFilter = "all";
+  }
+}
+
+function openRuntimeCreator() {
+  const types = supportedRuntimeEditorTypes(state.runtime?.capabilities);
+  if (!types.length) {
+    setStatus("This firmware does not advertise any runtime object types.");
+    return;
+  }
+  openRuntimeEditor({ type: types[0], isNew: true });
+}
+
+function openRuntimeEditor(item = null) {
+  if (!state.runtime) {
+    setStatus("Connect a Runtime Config keyboard to edit live objects.");
+    return;
+  }
+  closeOtherEditors();
+  closeRuntimeEditor();
+  const type = item?.type || supportedRuntimeEditorTypes(state.runtime.capabilities)[0] || "holdTap";
+  const source = item?.source || item?.object || null;
+  const isNew = !source;
+  state.runtimeEditor = {
+    type,
+    isNew,
+    id: source?.id || (type === "combo" ? nextRuntimeComboId(state.runtime.draft) : nextRuntimeObjectId(state.runtime.draft)),
+    source,
+    triggers:
+      type === "combo" && source
+        ? stockPositionsToSelectedIndexes(state.runtime.capabilities, source.keyPositions)
+        : [],
+    steps:
+      type === "macro"
+        ? (source?.steps || [{ type: "tap", binding: "&kp A" }]).map((step) => ({
+            type: step.type,
+            binding: step.binding || bindingTextFromAction(step.action, runtimeEncodeOpts()),
+            ms: step.ms || 0,
+          }))
+        : [{ type: "tap", binding: "&kp A" }],
+    danceActions:
+      type === "tapDance"
+        ? (source?.actions || [{ tapBinding: "&kp A", holdBinding: "&trans" }]).map((action) => ({
+            tapBinding: action.tapBinding || bindingTextFromAction(action.tapAction, runtimeEncodeOpts()) || "&kp A",
+            holdBinding: action.holdBinding || bindingTextFromAction(action.holdAction, runtimeEncodeOpts()) || "&trans",
+          }))
+        : [{ tapBinding: "&kp A", holdBinding: "&trans" }],
+    focus: type === "combo" ? "output" : "tap",
+  };
+  const editor = $("runtime-editor");
+  if (editor) editor.hidden = false;
+  fillRuntimeTypeSelect(type, isNew);
+  if ($("runtime-title")) {
+    $("runtime-title").textContent = isNew ? "New runtime object" : `Edit ${type === "combo" ? "combo" : runtimeObjectShortLabel(source)}`;
+  }
+  if ($("runtime-delete")) $("runtime-delete").hidden = isNew;
+  if ($("runtime-assign")) $("runtime-assign").hidden = type === "combo";
+  if ($("runtime-assign-hint")) $("runtime-assign-hint").hidden = type === "combo";
+  if ($("combo-pick-hint")) {
+    $("combo-pick-hint").hidden = false;
+    $("combo-pick-hint").textContent =
+      type === "combo" ? "Click keys on the layout to add or remove combo triggers." : "Click a key to assign this object after it is saved.";
+  }
+  hydrateRuntimeEditorFields(source);
+  renderRuntimeEditor();
+  setEditingMode();
+  renderKeyboard();
+}
+
+function closeRuntimeEditor() {
+  state.runtimeEditor = null;
+  if ($("runtime-editor")) $("runtime-editor").hidden = true;
+  if ($("combo-pick-hint") && !state.comboDraft && !state.behaviorDraft && !state.macroDraft && !state.combinationDraft) {
+    $("combo-pick-hint").hidden = true;
+  }
+  setEditingMode();
+  renderKeyboard();
+}
+
+function fillRuntimeTypeSelect(selected, isNew) {
+  const sel = $("runtime-type");
+  if (!sel) return;
+  const types = supportedRuntimeEditorTypes(state.runtime?.capabilities);
+  sel.replaceChildren();
+  for (const type of types) {
+    const opt = document.createElement("option");
+    opt.value = type;
+    opt.textContent = { holdTap: "Hold-tap", macro: "Macro", combo: "Combo", modMorph: "Mod-morph", tapDance: "Tap-dance" }[type] || type;
+    if (type === selected) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.disabled = !isNew;
+}
+
+function hydrateRuntimeEditorFields(source) {
+  const opts = runtimeEncodeOpts();
+  if ($("runtime-combo-output")) {
+    $("runtime-combo-output").value = source?.output ? bindingTextFromAction(source.output, opts) : "&kp ESC";
+  }
+  if ($("runtime-combo-timeout")) $("runtime-combo-timeout").value = source?.timeoutMs || state.settings.comboTimeout || 50;
+  if ($("runtime-combo-idle")) $("runtime-combo-idle").value = source?.requirePriorIdleMs || 0;
+  if ($("runtime-combo-slow")) $("runtime-combo-slow").checked = !!source?.slowRelease;
+  if ($("runtime-ht-tap")) $("runtime-ht-tap").value = source?.tapAction ? bindingTextFromAction(source.tapAction, opts) : "&kp A";
+  if ($("runtime-ht-hold")) $("runtime-ht-hold").value = source?.holdAction ? bindingTextFromAction(source.holdAction, opts) : "&mo NAV";
+  if ($("runtime-ht-flavor")) $("runtime-ht-flavor").value = String(source?.flavor || HOLD_TAP_FLAVOR.BALANCED);
+  if ($("runtime-ht-term")) $("runtime-ht-term").value = source?.tappingTermMs || state.settings.tappingTerm || 280;
+  if ($("runtime-ht-quick")) $("runtime-ht-quick").value = source?.quickTapMs ?? 175;
+  if ($("runtime-ht-idle")) $("runtime-ht-idle").value = source?.requirePriorIdleMs ?? 150;
+  if ($("runtime-morph-normal")) {
+    $("runtime-morph-normal").value = source?.normalAction ? bindingTextFromAction(source.normalAction, opts) : "&kp DOT";
+  }
+  if ($("runtime-morph-held")) {
+    $("runtime-morph-held").value = source?.morphedAction ? bindingTextFromAction(source.morphedAction, opts) : "&kp COMMA";
+  }
+  if ($("runtime-dance-term")) $("runtime-dance-term").value = source?.tappingTermMs || 200;
+  fillRuntimeMorphMods(source?.modifiers || 0x02);
+}
+
+function fillRuntimeMorphMods(mask) {
+  const wrap = $("runtime-morph-mods");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  for (const [id, bit, label] of RUNTIME_MODIFIERS) {
+    const lab = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(bit);
+    box.checked = !!(Number(mask) & bit);
+    lab.append(box, document.createTextNode(` ${label}`));
+    wrap.appendChild(lab);
+  }
+}
+
+function runtimeMorphMask() {
+  let mask = 0;
+  for (const box of document.querySelectorAll("#runtime-morph-mods input[type=checkbox]")) {
+    if (box.checked) mask |= Number(box.value);
+  }
+  return mask;
+}
+
+function renderRuntimeEditor() {
+  const editor = state.runtimeEditor;
+  if (!editor) return;
+  const type = $("runtime-type")?.value || editor.type;
+  editor.type = type;
+  for (const [id, show] of [
+    ["runtime-combo-fields", type === "combo"],
+    ["runtime-macro-fields", type === "macro"],
+    ["runtime-holdtap-fields", type === "holdTap"],
+    ["runtime-morph-fields", type === "modMorph"],
+    ["runtime-dance-fields", type === "tapDance"],
+  ]) {
+    if ($(id)) $(id).hidden = !show;
+  }
+  if ($("runtime-assign")) $("runtime-assign").hidden = type === "combo";
+  if ($("runtime-pill")) {
+    $("runtime-pill").textContent = type === "combo" ? `keys: ${editor.triggers.length || "—"}` : `id ${editor.id}`;
+  }
+  renderRuntimeTriggers();
+  renderRuntimeSteps();
+  renderRuntimeDanceActions();
+}
+
+function renderRuntimeTriggers() {
+  const wrap = $("runtime-triggers");
+  const editor = state.runtimeEditor;
+  if (!wrap || !editor) return;
+  wrap.replaceChildren();
+  if (!editor.triggers.length) {
+    const empty = document.createElement("div");
+    empty.className = "field-hint";
+    empty.textContent = "Click keys on the layout.";
+    wrap.appendChild(empty);
+    return;
+  }
+  for (const index of editor.triggers) {
+    const chip = document.createElement("span");
+    chip.className = "builder-key";
+    chip.textContent = comboKeyCaption(index);
+    wrap.appendChild(chip);
+  }
+}
+
+function renderRuntimeSteps() {
+  const wrap = $("runtime-steps");
+  const editor = state.runtimeEditor;
+  if (!wrap || !editor) return;
+  wrap.replaceChildren();
+  editor.steps.forEach((step, i) => {
+    const row = document.createElement("div");
+    row.className = `macro-step${editor.focus === `step:${i}` ? " active" : ""}`;
+    const kind = document.createElement("select");
+    for (const [value, label] of [
+      ["tap", "Tap"],
+      ["press", "Press"],
+      ["release", "Release"],
+      ["pauseUntilRelease", "Pause for release"],
+      ["wait", "Wait ms"],
+    ]) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      if (value === step.type) opt.selected = true;
+      kind.appendChild(opt);
+    }
+    kind.addEventListener("change", () => {
+      step.type = kind.value;
+      if (step.type === "wait" && !step.ms) step.ms = 100;
+      renderRuntimeSteps();
+    });
+    const input = document.createElement("input");
+    input.type = step.type === "wait" ? "number" : "text";
+    input.value = step.type === "wait" ? step.ms || 0 : step.type === "pauseUntilRelease" ? "" : step.binding || "";
+    input.disabled = step.type === "pauseUntilRelease";
+    input.addEventListener("focus", () => {
+      editor.focus = `step:${i}`;
+      renderRuntimeSteps();
+    });
+    input.addEventListener("input", () => {
+      if (step.type === "wait") step.ms = Number(input.value) || 0;
+      else step.binding = input.value;
+    });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      editor.steps.splice(i, 1);
+      renderRuntimeSteps();
+    });
+    row.append(kind, input, rm);
+    wrap.appendChild(row);
+  });
+}
+
+function renderRuntimeDanceActions() {
+  const wrap = $("runtime-dance-actions");
+  const editor = state.runtimeEditor;
+  if (!wrap || !editor) return;
+  wrap.replaceChildren();
+  editor.danceActions.forEach((action, i) => {
+    const row = document.createElement("div");
+    row.className = "macro-step";
+    const label = document.createElement("span");
+    label.textContent = `${i + 1}×`;
+    const tap = document.createElement("input");
+    tap.type = "text";
+    tap.value = action.tapBinding || "";
+    tap.placeholder = "&kp A";
+    tap.addEventListener("focus", () => {
+      editor.focus = `dance:${i}:tap`;
+    });
+    tap.addEventListener("input", () => {
+      action.tapBinding = tap.value;
+    });
+    const hold = document.createElement("input");
+    hold.type = "text";
+    hold.value = action.holdBinding || "";
+    hold.placeholder = "&trans";
+    hold.addEventListener("focus", () => {
+      editor.focus = `dance:${i}:hold`;
+    });
+    hold.addEventListener("input", () => {
+      action.holdBinding = hold.value;
+    });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      if (editor.danceActions.length === 1) return;
+      editor.danceActions.splice(i, 1);
+      renderRuntimeDanceActions();
+    });
+    row.append(label, tap, hold, rm);
+    wrap.appendChild(row);
+  });
+}
+
+function handleRuntimeEditorKey(index) {
+  const editor = state.runtimeEditor;
+  if (!editor) return;
+  if (editor.type === "combo" || $("runtime-type")?.value === "combo") {
+    const at = editor.triggers.indexOf(index);
+    if (at >= 0) editor.triggers.splice(at, 1);
+    else editor.triggers.push(index);
+    renderRuntimeEditor();
+    renderKeyboard();
+    return;
+  }
+  if (!editor.isNew && editor.id) {
+    assignBinding(index, runtimeBindingText(editor.id));
+    setStatus(`P${index} → ${runtimeBindingText(editor.id)}. Apply to save this snapshot.`);
+  } else {
+    setStatus("Save the runtime object to the draft before assigning it to a key.");
+  }
+}
+
+function fillRuntimeEditorFromPalette(text) {
+  const editor = state.runtimeEditor;
+  if (!editor) return;
+  const type = $("runtime-type")?.value || editor.type;
+  const focus = editor.focus;
+  if (type === "combo") $("runtime-combo-output").value = text;
+  else if (type === "holdTap" && (focus === "hold" || document.activeElement === $("runtime-ht-hold"))) {
+    $("runtime-ht-hold").value = text;
+  } else if (type === "holdTap") $("runtime-ht-tap").value = text;
+  else if (type === "modMorph" && (focus === "morphed" || document.activeElement === $("runtime-morph-held"))) {
+    $("runtime-morph-held").value = text;
+  } else if (type === "modMorph") $("runtime-morph-normal").value = text;
+  else if (type === "macro" && /^step:/.test(focus || "")) {
+    const index = Number(focus.split(":")[1]);
+    if (editor.steps[index] && editor.steps[index].type !== "wait" && editor.steps[index].type !== "pauseUntilRelease") {
+      editor.steps[index].binding = text;
+      renderRuntimeSteps();
+    }
+  } else if (type === "tapDance" && /^dance:/.test(focus || "")) {
+    const [, index, which] = focus.split(":");
+    if (editor.danceActions[index]) {
+      editor.danceActions[index][which === "hold" ? "holdBinding" : "tapBinding"] = text;
+      renderRuntimeDanceActions();
+    }
+  } else {
+    setStatus(`Palette: ${text}`);
+  }
+}
+
+function readRuntimeEditorForm() {
+  const editor = state.runtimeEditor;
+  const type = $("runtime-type")?.value || editor.type;
+  if (type === "combo") {
+    return {
+      id: editor.id,
+      selectedPositions: editor.triggers.slice(),
+      timeoutMs: Number($("runtime-combo-timeout").value),
+      requirePriorIdleMs: Number($("runtime-combo-idle").value),
+      slowRelease: $("runtime-combo-slow").checked,
+      outputBinding: $("runtime-combo-output").value.trim(),
+    };
+  }
+  if (type === "macro") {
+    return { id: editor.id, type, steps: editor.steps.map((step) => ({ ...step })) };
+  }
+  if (type === "holdTap") {
+    return {
+      id: editor.id,
+      type,
+      tapBinding: $("runtime-ht-tap").value.trim(),
+      holdBinding: $("runtime-ht-hold").value.trim(),
+      flavor: Number($("runtime-ht-flavor").value),
+      tappingTermMs: Number($("runtime-ht-term").value),
+      quickTapMs: Number($("runtime-ht-quick").value),
+      requirePriorIdleMs: Number($("runtime-ht-idle").value),
+    };
+  }
+  if (type === "modMorph") {
+    return {
+      id: editor.id,
+      type,
+      modifiers: runtimeMorphMask(),
+      normalBinding: $("runtime-morph-normal").value.trim(),
+      morphedBinding: $("runtime-morph-held").value.trim(),
+    };
+  }
+  return {
+    id: editor.id,
+    type: "tapDance",
+    tappingTermMs: Number($("runtime-dance-term").value),
+    actions: editor.danceActions.map((action) => ({ ...action })),
+  };
+}
+
+function saveRuntimeEditor() {
+  if (!state.runtime?.draft || !state.runtimeEditor) return;
+  const type = $("runtime-type")?.value || state.runtimeEditor.type;
+  const form = readRuntimeEditorForm();
+  try {
+    const next =
+      type === "combo"
+        ? upsertRuntimeCombo(state.runtime.draft, form, state.runtime.capabilities, runtimeEncodeOpts())
+        : upsertRuntimeObject(state.runtime.draft, form, state.runtime.capabilities, runtimeEncodeOpts());
+    encodeRuntimeSnapshot(next);
+    state.runtime.draft = next;
+    state.runtimeEditor.isNew = false;
+    state.runtimeEditor.source = type === "combo" ? findRuntimeCombo(next, form.id) : findRuntimeObject(next, form.id);
+    if ($("runtime-delete")) $("runtime-delete").hidden = false;
+    setDirty(true);
+    renderCombinations();
+    renderInspect();
+    setStatus(`${type === "combo" ? "Combo" : "Runtime object"} ${form.id} saved in the local draft. Apply to keyboard to persist it.`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+function deleteRuntimeEditorItem(item) {
+  if (!state.runtime?.draft) return;
+  try {
+    if (item.type === "combo") {
+      state.runtime.draft = deleteRuntimeCombo(state.runtime.draft, item.id);
+    } else {
+      const refs = runtimeObjectReferences(state.runtime.draft, item.id, state.runtime.capabilities);
+      if (refs.keys.length || refs.combos.length) {
+        const where = [
+          ...refs.keys.map((key) => `P${key.selectedIndex >= 0 ? key.selectedIndex : key.keyPosition}`),
+          ...refs.combos.map((combo) => `combo ${combo.id}`),
+        ].join(", ");
+        if (!window.confirm(`Runtime object ${item.id} is still used by ${where}. Remove those references first, or delete anyway and fail Apply?`)) {
+          setStatus("Delete cancelled.");
+          return;
+        }
+      }
+      state.runtime.draft = deleteRuntimeObject(state.runtime.draft, item.id, { force: true, capabilities: state.runtime.capabilities });
+    }
+    if (state.runtimeEditor?.id === item.id) closeRuntimeEditor();
+    setDirty(true);
+    renderCombinations();
+    renderKeyboard();
+    setStatus(`${item.type === "combo" ? "Combo" : "Runtime object"} ${item.id} removed from the local draft. Apply to keyboard to persist.`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+function deleteCurrentRuntimeEditor() {
+  const editor = state.runtimeEditor;
+  if (!editor || editor.isNew) {
+    closeRuntimeEditor();
+    return;
+  }
+  deleteRuntimeEditorItem({ type: editor.type, id: editor.id, source: editor.source, runtime: true });
+}
+
+function assignRuntimeObjectToSelected() {
+  const editor = state.runtimeEditor;
+  if (!editor || editor.type === "combo") return;
+  if (editor.isNew) {
+    setStatus("Save the runtime object to the draft first.");
+    return;
+  }
+  if (!state.selected.size) {
+    setStatus("Select a key first.");
+    return;
+  }
+  const text = runtimeBindingText(editor.id);
+  applyBindingSets(
+    [...state.selected].map((index) => ({ index, text })),
+    `Assign ${text}`
+  );
+}
+
+function addRuntimeMacroStep(kind) {
+  const editor = state.runtimeEditor;
+  if (!editor) return;
+  const step =
+    kind === "wait"
+      ? { type: "wait", ms: 100 }
+      : kind === "pause"
+        ? { type: "pauseUntilRelease" }
+        : { type: kind, binding: "&kp A" };
+  editor.steps.push(step);
+  editor.focus = `step:${editor.steps.length - 1}`;
+  renderRuntimeSteps();
 }
 
 async function applyLiveAll() {
@@ -4532,7 +5211,51 @@ function boot() {
     $("runtime-reset")?.addEventListener("click", () => {
       restoreRuntimeStock().catch((err) => setStatus(err.message));
     });
-    $("combo-new")?.addEventListener("click", () => openCombinationBuilder(null));
+    $("combo-new")?.addEventListener("click", () => {
+      if (state.runtime) openRuntimeCreator();
+      else openCombinationBuilder(null);
+    });
+    $("runtime-form")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      saveRuntimeEditor();
+    });
+    $("runtime-cancel")?.addEventListener("click", closeRuntimeEditor);
+    $("runtime-x")?.addEventListener("click", closeRuntimeEditor);
+    $("runtime-delete")?.addEventListener("click", deleteCurrentRuntimeEditor);
+    $("runtime-assign")?.addEventListener("click", assignRuntimeObjectToSelected);
+    $("runtime-type")?.addEventListener("change", () => {
+      if (!state.runtimeEditor) return;
+      state.runtimeEditor.type = $("runtime-type").value;
+      if (state.runtimeEditor.type === "combo") {
+        state.runtimeEditor.id = nextRuntimeComboId(state.runtime.draft);
+      } else if (state.runtimeEditor.isNew) {
+        state.runtimeEditor.id = nextRuntimeObjectId(state.runtime.draft);
+      }
+      renderRuntimeEditor();
+    });
+    document.querySelectorAll("[data-runtime-add]").forEach((btn) => {
+      btn.addEventListener("click", () => addRuntimeMacroStep(btn.dataset.runtimeAdd));
+    });
+    $("runtime-dance-add")?.addEventListener("click", () => {
+      if (!state.runtimeEditor) return;
+      state.runtimeEditor.danceActions.push({ tapBinding: "&kp A", holdBinding: "&trans" });
+      renderRuntimeDanceActions();
+    });
+    $("runtime-ht-tap")?.addEventListener("focus", () => {
+      if (state.runtimeEditor) state.runtimeEditor.focus = "tap";
+    });
+    $("runtime-ht-hold")?.addEventListener("focus", () => {
+      if (state.runtimeEditor) state.runtimeEditor.focus = "hold";
+    });
+    $("runtime-morph-normal")?.addEventListener("focus", () => {
+      if (state.runtimeEditor) state.runtimeEditor.focus = "normal";
+    });
+    $("runtime-morph-held")?.addEventListener("focus", () => {
+      if (state.runtimeEditor) state.runtimeEditor.focus = "morphed";
+    });
+    $("runtime-combo-output")?.addEventListener("focus", () => {
+      if (state.runtimeEditor) state.runtimeEditor.focus = "output";
+    });
     document.querySelectorAll("[data-builder-step]").forEach((el) => {
       el.addEventListener("click", () => setBuilderStep(el.dataset.builderStep));
     });

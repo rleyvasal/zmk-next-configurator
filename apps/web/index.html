@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Map</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=48" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=49" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -191,6 +191,123 @@
               <button type="button" id="builder-cancel">Cancel</button>
               <button type="button" id="builder-delete" class="danger" hidden>Delete</button>
               <button type="submit" id="builder-save" class="primary">Save</button>
+            </div>
+          </form>
+        </section>
+        <section id="runtime-editor" class="combo-editor" hidden>
+          <form id="runtime-form">
+            <div class="combo-dialog-top">
+              <h2 id="runtime-title">New runtime object</h2>
+              <select id="runtime-type" aria-label="Runtime object type"></select>
+              <span id="runtime-pill" class="combo-keys-pill"></span>
+              <button type="button" id="runtime-x" class="settings-close" aria-label="Close">×</button>
+            </div>
+            <p id="runtime-help" class="field-hint">Edits stay in the editor until Apply. Firmware validates the complete snapshot before it can replace the active generation.</p>
+            <div id="runtime-combo-fields" hidden>
+              <div class="builder-block step-active" id="runtime-trigger-block">
+                <div class="assign-head">
+                  <span>Trigger keys</span>
+                  <span class="field-hint">Click keys on the layout. Positions are saved in stock space.</span>
+                </div>
+                <div id="runtime-triggers" class="builder-keys"></div>
+              </div>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Output</span>
+                  <input id="runtime-combo-output" type="text" spellcheck="false" placeholder="&amp;kp ESC or &amp;rt 12" />
+                </label>
+                <label class="field">
+                  <span>Timeout ms</span>
+                  <input id="runtime-combo-timeout" type="number" min="10" max="500" value="50" />
+                </label>
+                <label class="field">
+                  <span>Prior idle ms</span>
+                  <input id="runtime-combo-idle" type="number" min="0" max="500" value="0" />
+                </label>
+              </div>
+              <label class="check tight">
+                <input id="runtime-combo-slow" type="checkbox" />
+                Slow release
+              </label>
+            </div>
+            <div id="runtime-macro-fields" hidden>
+              <div class="assign-head"><span>Steps</span></div>
+              <div id="runtime-steps" class="macro-steps"></div>
+              <div class="macro-add-steps">
+                <button type="button" data-runtime-add="tap">+ Tap</button>
+                <button type="button" data-runtime-add="press">+ Press</button>
+                <button type="button" data-runtime-add="release">+ Release</button>
+                <button type="button" data-runtime-add="pause">+ Pause for release</button>
+                <button type="button" data-runtime-add="wait">+ Wait</button>
+              </div>
+            </div>
+            <div id="runtime-holdtap-fields" hidden>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Tap</span>
+                  <input id="runtime-ht-tap" type="text" spellcheck="false" placeholder="&amp;kp A" />
+                </label>
+                <label class="field">
+                  <span>Hold</span>
+                  <input id="runtime-ht-hold" type="text" spellcheck="false" placeholder="&amp;mo NAV" />
+                </label>
+                <label class="field">
+                  <span>Flavor</span>
+                  <select id="runtime-ht-flavor">
+                    <option value="2">balanced</option>
+                    <option value="1">hold-preferred</option>
+                    <option value="3">tap-preferred</option>
+                    <option value="4">tap-unless-interrupted</option>
+                  </select>
+                </label>
+              </div>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Tapping term ms</span>
+                  <input id="runtime-ht-term" type="number" min="1" max="800" value="280" />
+                </label>
+                <label class="field">
+                  <span>Quick-tap ms</span>
+                  <input id="runtime-ht-quick" type="number" min="0" max="500" value="175" />
+                </label>
+                <label class="field">
+                  <span>Prior idle ms</span>
+                  <input id="runtime-ht-idle" type="number" min="0" max="500" value="150" />
+                </label>
+              </div>
+            </div>
+            <div id="runtime-morph-fields" hidden>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Default</span>
+                  <input id="runtime-morph-normal" type="text" spellcheck="false" placeholder="&amp;kp DOT" />
+                </label>
+                <label class="field">
+                  <span>When modifier held</span>
+                  <input id="runtime-morph-held" type="text" spellcheck="false" placeholder="&amp;kp COMMA" />
+                </label>
+              </div>
+              <div class="assign-head"><span>Trigger modifiers</span></div>
+              <div id="runtime-morph-mods" class="mod-grid"></div>
+            </div>
+            <div id="runtime-dance-fields" hidden>
+              <div class="fields-3">
+                <label class="field">
+                  <span>Tapping term ms</span>
+                  <input id="runtime-dance-term" type="number" min="1" max="800" value="200" />
+                </label>
+              </div>
+              <div id="runtime-dance-actions" class="macro-steps"></div>
+              <div class="macro-add-steps">
+                <button type="button" id="runtime-dance-add">+ Tap count</button>
+              </div>
+            </div>
+            <p id="runtime-assign-hint" class="field-hint" hidden>Click a key on the layout to assign this object, or use Assign to selected key.</p>
+            <div class="combo-dialog-actions">
+              <button type="button" id="runtime-cancel">Cancel</button>
+              <button type="button" id="runtime-delete" class="danger" hidden>Delete</button>
+              <button type="button" id="runtime-assign">Assign to selected key</button>
+              <button type="submit" id="runtime-save" class="primary">Save to draft</button>
             </div>
           </form>
         </section>
@@ -381,7 +498,7 @@
         <div class="lists-row combinations-row">
           <section class="combos kind-combo" id="combinations-section">
             <div class="combos-head">
-              <h2>Combinations</h2>
+              <h2 id="combinations-title">Combinations</h2>
               <div class="combo-filters" id="combo-filters">
                 <button type="button" data-filter="all" class="on">All</button>
                 <button type="button" data-filter="hold-tap">Hold-taps</button>
@@ -390,6 +507,7 @@
               </div>
               <button id="combo-new" type="button">+ New</button>
             </div>
+            <p id="runtime-usage" class="field-hint" hidden></p>
             <div id="combinations" class="combo-list"></div>
           </section>
         </div>
@@ -507,9 +625,9 @@
     </div>
     <div class="status" id="status">Load a keymap to begin.</div>
     <script type="module">
-      import { applyTheme } from "../../src/ui/theme.js?v=48";
+      import { applyTheme } from "../../src/ui/theme.js?v=49";
       applyTheme();
-      import("../../src/ui/app.js?v=48").catch((err) => {
+      import("../../src/ui/app.js?v=49").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

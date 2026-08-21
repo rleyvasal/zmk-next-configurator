@@ -5,7 +5,25 @@ import {
   encodeRuntimeSnapshot,
   runtimeObjectAction,
 } from "../src/connection/runtime-config.js";
-import { RuntimeDraftError, replaceDraftKeymapOverrides } from "../src/connection/runtime-draft.js";
+import {
+  RuntimeDraftError,
+  actionFromBindingText,
+  bindingTextFromAction,
+  capabilitySupportsObjectType,
+  createRuntimeDraft,
+  deleteRuntimeCombo,
+  deleteRuntimeObject,
+  isRuntimeObjectBinding,
+  nextRuntimeObjectId,
+  parseRuntimeObjectId,
+  replaceDraftKeymapOverrides,
+  runtimeObjectReferences,
+  runtimeResourceUsage,
+  selectedIndexesToStock,
+  supportedRuntimeEditorTypes,
+  upsertRuntimeCombo,
+  upsertRuntimeObject,
+} from "../src/connection/runtime-draft.js";
 import {
   concatBytes,
   decodeFields,
@@ -230,6 +248,181 @@ if (
   resetResponse.runtimeConfig.reset.status?.pendingGeneration !== 22
 ) {
   throw new Error(`reset response ${JSON.stringify(resetResponse)}`);
+}
+
+const editorCaps = {
+  ...draftCapabilities,
+  supportedObjectTypes: [1, 2, 3, 4],
+  supportedFeatures: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+  limits: {
+    maxKeymapOverrides: 16,
+    maxRuntimeObjects: 8,
+    maxCombos: 4,
+    maxComboKeys: 3,
+    maxMacroSteps: 16,
+    maxTapDanceActions: 8,
+  },
+};
+const encodeOpts = { behaviors: draftBehaviors, studioLayers: draftStudioLayers };
+
+if (parseRuntimeObjectId("&rt 13") !== 13 || !isRuntimeObjectBinding("&rt 13")) {
+  throw new Error("parse runtime binding");
+}
+if (actionFromBindingText("&rt 13", { allowRuntimeObject: true, snapshot }).runtimeObjectId !== 13) {
+  throw new Error("runtime action from binding");
+}
+let nestedRejected = false;
+try {
+  actionFromBindingText("&rt 13", { allowRuntimeObject: false, snapshot });
+} catch (error) {
+  nestedRejected = error instanceof RuntimeDraftError;
+}
+if (!nestedRejected) throw new Error("nested runtime object must be rejected");
+
+const holdTap = upsertRuntimeObject(
+  snapshot,
+  {
+    id: nextRuntimeObjectId(snapshot),
+    type: "holdTap",
+    tapBinding: "&kp A",
+    holdBinding: "&mo NAV",
+    flavor: HOLD_TAP_FLAVOR.BALANCED,
+    tappingTermMs: 280,
+    quickTapMs: 175,
+    requirePriorIdleMs: 150,
+  },
+  editorCaps,
+  encodeOpts
+);
+const holdTapId = holdTap.runtimeObjects.at(-1).id;
+if (holdTapId !== 15 || holdTap.runtimeObjects.length !== 5) {
+  throw new Error(`hold-tap upsert ${JSON.stringify(holdTap.runtimeObjects.map((o) => o.id))}`);
+}
+if (bindingTextFromAction(holdTap.runtimeObjects.at(-1).tapAction, encodeOpts) !== "&kp A") {
+  throw new Error("hold-tap tap decode");
+}
+
+const withKey = replaceDraftKeymapOverrides({
+  snapshot: holdTap,
+  capabilities: editorCaps,
+  editorLayers: [{ bindings: [{ text: `&rt ${holdTapId}` }, { text: "&kp B" }, { text: "&kp C" }] }],
+  deviceLayerIds: [0],
+  ...encodeOpts,
+});
+if (withKey.keymapOverrides[0].action.runtimeObjectId !== holdTapId) {
+  throw new Error(`&rt must encode as a runtime object ActionRef ${JSON.stringify(withKey.keymapOverrides[0])}`);
+}
+if (withKey.keymapOverrides[0].action.compiledBehavior) {
+  throw new Error("compiled &rt ActionRefs are invalid");
+}
+
+const refs = runtimeObjectReferences(withKey, holdTapId, editorCaps);
+if (refs.keys.length !== 1 || refs.keys[0].selectedIndex !== 0) {
+  throw new Error(`object refs ${JSON.stringify(refs)}`);
+}
+let deleteBlocked = false;
+try {
+  deleteRuntimeObject(withKey, holdTapId);
+} catch (error) {
+  deleteBlocked = error instanceof RuntimeDraftError && /still used/.test(error.message);
+}
+if (!deleteBlocked) throw new Error("delete must warn while keys still reference the object");
+
+const comboDraft = upsertRuntimeCombo(
+  holdTap,
+  {
+    id: 40,
+    selectedPositions: [0, 2],
+    timeoutMs: 50,
+    outputBinding: `&rt ${holdTapId}`,
+    slowRelease: true,
+    requirePriorIdleMs: 20,
+  },
+  editorCaps,
+  encodeOpts
+);
+if (comboDraft.combos.at(-1).keyPositions.join(",") !== "2,1") {
+  throw new Error(`combo stock map ${JSON.stringify(comboDraft.combos.at(-1))}`);
+}
+if (selectedIndexesToStock(editorCaps, [0, 2]).join(",") !== "2,1") {
+  throw new Error("selected to stock");
+}
+
+let unbalanced = false;
+try {
+  upsertRuntimeObject(
+    snapshot,
+    {
+      id: 50,
+      type: "macro",
+      steps: [{ type: "press", binding: "&kp A" }, { type: "tap", binding: "&kp B" }],
+    },
+    editorCaps,
+    encodeOpts
+  );
+} catch (error) {
+  unbalanced = error instanceof RuntimeDraftError && /balance/.test(error.message);
+}
+if (!unbalanced) throw new Error("unbalanced macro must be rejected");
+
+let nestedMacro = false;
+try {
+  upsertRuntimeObject(
+    holdTap,
+    {
+      id: 51,
+      type: "macro",
+      steps: [{ type: "tap", binding: `&rt ${holdTapId}` }],
+    },
+    editorCaps,
+    encodeOpts
+  );
+} catch (error) {
+  nestedMacro = error instanceof RuntimeDraftError && /cannot nest/.test(error.message);
+}
+if (!nestedMacro) throw new Error("macro child runtime objects must be rejected");
+
+const gatedCaps = { ...editorCaps, supportedObjectTypes: [2], supportedFeatures: [5] };
+if (capabilitySupportsObjectType(gatedCaps, "holdTap") || supportedRuntimeEditorTypes(gatedCaps).includes("combo")) {
+  throw new Error("unsupported types must stay hidden");
+}
+let gated = false;
+try {
+  upsertRuntimeObject(snapshot, { id: 52, type: "holdTap", tapBinding: "&kp A", holdBinding: "&kp B", flavor: 2, tappingTermMs: 200 }, gatedCaps, encodeOpts);
+} catch (error) {
+  gated = error instanceof RuntimeDraftError && /not advertised/.test(error.message);
+}
+if (!gated) throw new Error("capability gating must reject unadvertised engines");
+
+const limited = { ...editorCaps, limits: { ...editorCaps.limits, maxRuntimeObjects: snapshot.runtimeObjects.length } };
+let overLimit = false;
+try {
+  upsertRuntimeObject(
+    snapshot,
+    { id: 60, type: "macro", steps: [{ type: "tap", binding: "&kp A" }] },
+    limited,
+    encodeOpts
+  );
+} catch (error) {
+  overLimit = error instanceof RuntimeDraftError && /reserves/.test(error.message);
+}
+if (!overLimit) throw new Error("object pool overflow must be rejected locally");
+
+const cleared = deleteRuntimeObject(
+  replaceDraftKeymapOverrides({
+    snapshot: deleteRuntimeCombo(comboDraft, 40),
+    capabilities: editorCaps,
+    editorLayers: [{ bindings: [{ text: "&kp A" }, { text: "&kp B" }, { text: "&kp C" }] }],
+    deviceLayerIds: [0],
+    ...encodeOpts,
+  }),
+  holdTapId
+);
+if (cleared.runtimeObjects.some((object) => object.id === holdTapId)) {
+  throw new Error("deleted hold-tap is still in the draft");
+}
+if (runtimeResourceUsage(createRuntimeDraft(cleared)).runtimeObjects !== snapshot.runtimeObjects.length) {
+  throw new Error("resource usage after delete");
 }
 
 console.log("runtime-config client codec tests passed");

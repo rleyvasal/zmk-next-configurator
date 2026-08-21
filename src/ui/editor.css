@@ -612,6 +612,14 @@ main.workspace {
   border-color: var(--accent-dim);
 }
 
+#runtime-type {
+  max-width: 11rem;
+}
+
+#runtime-usage {
+  margin: 0.15rem 0.2rem 0.35rem;
+}
+
 .builder-block {
   margin: 0.3rem 0 0;
   padding: 0.3rem 0.45rem 0.35rem;

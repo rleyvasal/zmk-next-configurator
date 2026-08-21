@@ -835,6 +835,7 @@ export function bindingLabel(text) {
   if (parts[0] === "&mac_lock") return "Mac";
   if (parts[0] === "&win_lock") return "Win";
   if (parts[0] === "&studio_unlock") return "STU";
+  if (parts[0] === "&rt") return `RT${parts[1] || ""}`;
   if (parts[0] === "&bt") {
     if (parts[1] === "BT_SEL") return `BT${parts[2] ?? ""}`;
     if (parts[1] === "BT_CLR") return "BTx";

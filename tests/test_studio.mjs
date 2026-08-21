@@ -62,6 +62,10 @@ const skBack = cellsToBinding({ behaviorId: 30, rawBehaviorId: 30, param1: hidUs
 if (!skBack.ok || skBack.text !== "&sk LALT") throw new Error(`decode sk ${JSON.stringify(skBack)}`);
 const rstBack = cellsToBinding({ behaviorId: 32, rawBehaviorId: 32, param1: 0, param2: 0 }, namedFw, layers);
 if (!rstBack.ok || rstBack.text !== "&sys_reset") throw new Error(`decode reset ${JSON.stringify(rstBack)}`);
+const runtimeFw = [{ id: 18, displayName: "Runtime Object", param1: [{ name: "object" }], param2: [{ nil: true }] }];
+if (findBehavior(runtimeFw, "rt")?.id !== 18) throw new Error("rt should match Runtime Object");
+const rtBack = cellsToBinding({ behaviorId: 18, rawBehaviorId: 18, param1: 13, param2: 0 }, runtimeFw, layers);
+if (!rtBack.ok || rtBack.text !== "&rt 13") throw new Error(`decode rt ${JSON.stringify(rtBack)}`);
 
 const mouseFw = [
   { id: 40, displayName: "mouse_move", param1: [{ name: "MOVE_UP", constant: MOUSE_MOVE.MOVE_UP }], param2: [{ nil: true }] },

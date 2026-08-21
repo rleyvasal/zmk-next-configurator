@@ -43,8 +43,13 @@ update only existing bindings. On ZMK Next Runtime Config firmware, the editor d
 capability, translates the selected layout through the device-reported stock-position map,
 then validates and saves a complete immutable snapshot that activates only when the keyboard
 is idle. **Restore stock configuration** writes an empty runtime generation while retaining the
-previous valid generation as on-device recovery fallback. Runtime object editors are added
-incrementally; their existing device objects are preserved while ordinary bindings are applied.
+previous valid generation as on-device recovery fallback.
+
+When Runtime Config is available, **Runtime objects** edits macros, combos, hold-taps,
+mod-morphs, and tap-dances in a local draft. Unsupported types stay hidden. Assign an
+object to many keys with `&rt <id>`. Apply still uploads one complete snapshot; firmware
+rejects invalid generations without touching the active configuration. `.keymap` macros and
+combos remain file-only until a later import step.
 
 ## Add a keyboard
 

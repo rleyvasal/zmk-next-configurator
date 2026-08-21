@@ -162,6 +162,7 @@ const BEHAVIOR_ALIASES = {
   msc: ["mouse scroll", "mouse_scroll", "mousescroll", "scroll", "msc"],
   mmv: ["move mouse", "mouse move", "mouse_move", "mousemove", "mmv"],
   mkp: ["mouse key press", "mouse button", "mouse_key_press", "mouse click", "mkp"],
+  rt: ["rt", "runtime object", "runtime_object"],
 };
 
 const HID_ALIASES = {
@@ -685,6 +686,9 @@ export function cellsToBinding(cell, behaviors, layers) {
   let behavior = findBehaviorById(behaviors, cell);
   if (!behavior) return { ok: false, reason: `unknown behavior id ${cell.behaviorId}/${cell.rawBehaviorId}` };
   let name = dtsNameFromBehavior(behavior);
+  if (name === "rt" || name === "runtime_object") {
+    return { ok: true, text: `&rt ${Number(cell.param1) || 0}` };
+  }
   const asMove = nameFromTable(cell.param1, MOUSE_MOVE);
   const asScroll = nameFromTable(cell.param1, MOUSE_SCROLL);
   const asBtn = nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
