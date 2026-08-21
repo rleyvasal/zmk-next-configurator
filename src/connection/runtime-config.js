@@ -39,6 +39,15 @@ export const HOLD_TAP_FLAVOR = Object.freeze({
   TAP_UNLESS_INTERRUPTED: 4,
 });
 
+export class RuntimeValidationError extends Error {
+  constructor(message, diagnostics = [], validation = null) {
+    super(message);
+    this.name = "RuntimeValidationError";
+    this.diagnostics = diagnostics;
+    this.validation = validation;
+  }
+}
+
 function u32(value, name) {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 0 || number > 0xffffffff) {

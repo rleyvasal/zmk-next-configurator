@@ -74,7 +74,7 @@ import {
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio } from "../connection/studio.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
-import { HOLD_TAP_FLAVOR, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
+import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
   RuntimeDraftError,
   RUNTIME_MODIFIERS,
@@ -89,14 +89,26 @@ import {
   parseRuntimeObjectId,
   replaceDraftKeymapOverrides,
   runtimeBindingText,
+  runtimeIssuesFromDiagnostics,
+  runtimeIssuesFromDraftError,
   runtimeObjectReferences,
+  runtimeResourceOverLimit,
+  runtimeResourceRows,
   runtimeResourceUsage,
+  stockToSelectedIndex,
   stockPositionsToSelectedIndexes,
   supportedRuntimeEditorTypes,
   upsertRuntimeCombo,
   upsertRuntimeObject,
 } from "../connection/runtime-draft.js";
 import { formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../connection/runtime-import.js";
+import {
+  applyRuntimeDocument,
+  encodeRuntimeDocument,
+  isRuntimeDocument,
+  parseRuntimeDocument,
+  stringifyRuntimeDocument,
+} from "../connection/runtime-document.js";
 import {
   parseBinding,
   formatBinding,
@@ -169,6 +181,7 @@ const state = {
   combinationDraft: null,
   combinationFilter: "all",
   runtimeEditor: null,
+  runtimeIssues: [],
   deviceLayerCount: 0,
   flashNotice: null,
 };
@@ -1070,6 +1083,19 @@ function renderInspect(force = false) {
     warn.textContent = `Combo / recovery: ${prot}. Changing this key can break that combo.`;
     form.appendChild(warn);
   }
+  const runtimeKeyIssues = (state.runtimeIssues || []).filter(
+    (issue) => issue.kind === "key" && (issue.selectedIndex === idx || issue.text === text)
+  );
+  const runtimeObjectId = parseRuntimeObjectId(text);
+  const runtimeObjectIssues = runtimeObjectId
+    ? (state.runtimeIssues || []).filter((issue) => issue.kind === "object" && issue.id === runtimeObjectId)
+    : [];
+  for (const issue of [...runtimeKeyIssues, ...runtimeObjectIssues]) {
+    const warn = document.createElement("div");
+    warn.className = "warn";
+    warn.textContent = issue.fieldPath ? `${issue.message} (${issue.fieldPath})` : issue.message;
+    form.appendChild(warn);
+  }
 
   el.appendChild(form);
 }
@@ -1324,6 +1350,7 @@ function renderKeyboard() {
     if (state.runtimeEditor?.type === "combo" && state.runtimeEditor.triggers.includes(i)) {
       rect.classList.add("combo-member");
     }
+    if (keyHasRuntimeIssue(i)) rect.classList.add("runtime-error");
     if (state.behaviorDraft?.triggerPositions.includes(i) && isOppositeTrigger(state.behaviorDraft, i)) {
       rect.classList.add("trigger-member");
     }
@@ -1840,7 +1867,7 @@ function renderCombinations() {
   const draftId = state.combinationDraft?.source?.item?.id;
   for (const item of items) {
     const chip = document.createElement("div");
-    chip.className = `combo-chip ${item.tint}${item.guarded ? " guarded" : ""}${draftId === item.id ? " active" : ""}`;
+    chip.className = `combo-chip ${item.tint}${item.guarded ? " guarded" : ""}${draftId === item.id ? " active" : ""}${itemHasRuntimeIssue(item) ? " runtime-error" : ""}`;
     chip.title = `${item.title} · ${item.detail}`;
     chip.innerHTML = `<span class="combo-keys">${item.title}</span><span>→</span><span class="combo-out">${item.detail}</span>`;
     if (!item.guarded) {
@@ -3884,6 +3911,7 @@ async function connectOrDisconnect() {
     await state.studio.close();
     state.studio = null;
     state.runtime = null;
+    state.runtimeIssues = [];
     closeRuntimeEditor();
     state.deviceLayerCount = 0;
     setStudioLabel("Not connected");
@@ -3972,15 +4000,6 @@ async function applyRuntimeAll() {
     setStatus("No editor layers are present in this firmware. Download the keymap and flash to add them.");
     return;
   }
-  const prompt =
-    "Save one complete Runtime Config snapshot to the keyboard? It will persist through reboot and activate only when the keyboard is idle." +
-    (skipped.length
-      ? `\n\n${skipped.join(", ")} cannot be added live and will remain editor-only. Download and flash to add ${skipped.length === 1 ? "it" : "them"}.`
-      : "");
-  if ((state.settings.confirmApply || skipped.length) && !window.confirm(prompt)) {
-    setStatus("Apply cancelled.");
-    return;
-  }
 
   let draft;
   try {
@@ -3998,14 +4017,51 @@ async function applyRuntimeAll() {
       if (first?.text && isFlashRequiredReason(first.reason)) {
         showFlashNeededForBinding(first.text, first.reason);
       }
+      presentRuntimeIssues(runtimeIssuesFromDraftError(error), error.message);
+      return;
     }
     throw error;
   }
 
+  const usage = runtimeResourceUsage(draft);
+  const over = runtimeResourceOverLimit(usage, state.runtime.capabilities);
+  const rows = runtimeResourceRows(usage, state.runtime.capabilities)
+    .map((row) => `${row.label} ${row.used}${row.limit == null ? "" : `/${row.limit}`}`)
+    .join(", ");
+  const prompt =
+    "Save one complete Runtime Config snapshot to the keyboard? It will persist through reboot and activate only when the keyboard is idle." +
+    `\n\nResource use: ${rows}.` +
+    (over ? `\n\nThis draft exceeds firmware limits: ${over}` : "") +
+    (skipped.length
+      ? `\n\n${skipped.join(", ")} cannot be added live and will remain editor-only. Download and flash to add ${skipped.length === 1 ? "it" : "them"}.`
+      : "");
+  if ((state.settings.confirmApply || skipped.length || over) && !window.confirm(prompt)) {
+    setStatus("Apply cancelled.");
+    return;
+  }
+  if (over) {
+    presentRuntimeIssues([{ kind: "generic", message: `Runtime Config needs ${over}` }], `Cannot apply: ${over}`);
+    return;
+  }
+
+  state.runtimeIssues = [];
   setStatus("Validating and saving Runtime Config snapshot…");
-  const { validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
-    expectedActiveGeneration: state.runtime.snapshot.generation,
-  });
+  let validation;
+  let commit;
+  try {
+    ({ validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
+      expectedActiveGeneration: state.runtime.snapshot.generation,
+    }));
+  } catch (error) {
+    if (error instanceof RuntimeValidationError) {
+      presentRuntimeIssues(
+        runtimeIssuesFromDiagnostics(error.diagnostics, state.runtime.capabilities),
+        error.message
+      );
+      return;
+    }
+    throw error;
+  }
   const nextSnapshot = createRuntimeDraft({ ...draft, generation: commit.generation });
   state.runtime = {
     ...state.runtime,
@@ -4019,10 +4075,31 @@ async function applyRuntimeAll() {
     "on"
   );
   updateStudioButtons();
+  renderKeyboard();
+  renderInspect();
   renderCombinations();
-  const usage = validation.resourceUsage;
-  const usageNote = usage
-    ? ` Objects ${usage.runtimeObjects?.used ?? runtimeResourceUsage(nextSnapshot).runtimeObjects}/${usage.runtimeObjects?.limit || "?"}, combos ${usage.combos?.used ?? runtimeResourceUsage(nextSnapshot).combos}/${usage.combos?.limit || "?"}.`
+  const firmwareUsage = validation.resourceUsage;
+  const usageNote = firmwareUsage
+    ? ` ${runtimeResourceRows(
+        {
+          runtimeObjects: firmwareUsage.runtimeObjects?.used,
+          combos: firmwareUsage.combos?.used,
+          macroSteps: firmwareUsage.macroSteps?.used,
+          tapDanceActions: firmwareUsage.tapDanceActions?.used,
+          keymapOverrides: firmwareUsage.keymapOverrides?.used,
+        },
+        {
+          limits: {
+            maxRuntimeObjects: firmwareUsage.runtimeObjects?.limit,
+            maxCombos: firmwareUsage.combos?.limit,
+            maxMacroSteps: firmwareUsage.macroSteps?.limit,
+            maxTapDanceActions: firmwareUsage.tapDanceActions?.limit,
+            maxKeymapOverrides: firmwareUsage.keymapOverrides?.limit,
+          },
+        }
+      )
+        .map((row) => `${row.label} ${row.used}/${row.limit ?? "?"}`)
+        .join(", ")}.`
     : "";
   setStatus(
     `Saved Runtime Config generation ${commit.generation}` +
@@ -4135,16 +4212,38 @@ function renderRuntimeChrome() {
   const usage = $("runtime-usage");
   const filters = $("combo-filters");
   const importBtn = $("runtime-import");
+  const exportBtn = $("runtime-export");
+  const errors = $("runtime-errors");
   if (title) title.textContent = state.runtime ? "Runtime objects" : "Combinations";
-  if (importBtn) {
-    importBtn.hidden = !state.runtime || !hasKeymapRuntimeSources();
-  }
+  if (importBtn) importBtn.hidden = !state.runtime || !hasKeymapRuntimeSources();
+  if (exportBtn) exportBtn.hidden = !state.runtime;
   if (usage) {
     usage.hidden = !state.runtime;
+    usage.replaceChildren();
     if (state.runtime) {
       const used = runtimeResourceUsage(state.runtime.draft);
-      const limits = state.runtime.capabilities?.limits || {};
-      usage.textContent = `Draft ${used.runtimeObjects}/${limits.maxRuntimeObjects || "?"} objects · ${used.combos}/${limits.maxCombos || "?"} combos · ${used.macroSteps}/${limits.maxMacroSteps || "?"} macro steps. Apply to save on the keyboard.`;
+      used.keymapOverrides = Math.max(used.keymapOverrides, estimatedKeymapOverrideCount());
+      for (const row of runtimeResourceRows(used, state.runtime.capabilities)) {
+        const span = document.createElement("span");
+        span.className = row.over ? "runtime-meter over" : "runtime-meter";
+        span.textContent = row.limit == null ? `${row.label} ${row.used}` : `${row.label} ${row.used}/${row.limit}`;
+        usage.appendChild(span);
+      }
+    }
+  }
+  if (errors) {
+    const issues = state.runtimeIssues || [];
+    errors.hidden = !issues.length;
+    errors.replaceChildren();
+    for (const issue of issues.slice(0, 6)) {
+      const line = document.createElement("div");
+      line.textContent = runtimeIssueLabel(issue);
+      errors.appendChild(line);
+    }
+    if (issues.length > 6) {
+      const more = document.createElement("div");
+      more.textContent = `${issues.length - 6} more…`;
+      errors.appendChild(more);
     }
   }
   if (!filters) return;
@@ -4177,11 +4276,146 @@ function renderRuntimeChrome() {
   }
 }
 
+function estimatedKeymapOverrideCount() {
+  if (!state.runtime || !state.studio?.layers?.length) return 0;
+  const keys = state.studio.layers[0]?.bindings?.length || keyCount();
+  return state.studio.layers.length * keys;
+}
+
+function runtimeIssueLabel(issue) {
+  if (issue.kind === "object") return `Object ${issue.id}: ${issue.message}`;
+  if (issue.kind === "combo") return `Combo ${issue.id}: ${issue.message}`;
+  if (issue.kind === "key") {
+    const where = issue.selectedIndex != null ? `P${issue.selectedIndex}` : `stock ${issue.stockPosition}`;
+    return `${where}: ${issue.message}`;
+  }
+  return issue.message;
+}
+
+function currentDeviceLayerId() {
+  const mapped = studioLayerIndex(state.layer);
+  return mapped == null ? null : state.studio?.layers?.[mapped]?.id;
+}
+
+function keyHasRuntimeIssue(index) {
+  const layerId = currentDeviceLayerId();
+  return (state.runtimeIssues || []).some((issue) => {
+    if (issue.kind !== "key") return false;
+    if (issue.selectedIndex !== index) return false;
+    if (issue.layerIndex != null) return issue.layerIndex === state.layer;
+    if (issue.layerId != null) return issue.layerId === layerId;
+    return true;
+  });
+}
+
+function itemHasRuntimeIssue(item) {
+  const kind = item.type === "combo" ? "combo" : "object";
+  return (state.runtimeIssues || []).some((issue) => issue.kind === kind && issue.id === item.id);
+}
+
+function presentRuntimeIssues(issues, message) {
+  state.runtimeIssues = issues || [];
+  renderKeyboard();
+  renderInspect();
+  renderCombinations();
+  setStatus(message);
+  const firstKey = state.runtimeIssues.find((issue) => issue.kind === "key" && issue.selectedIndex != null);
+  if (firstKey) {
+    if (firstKey.layerIndex != null) selectLayer(firstKey.layerIndex);
+    selectOnly(firstKey.selectedIndex);
+  }
+}
+
 function hasKeymapRuntimeSources() {
   return (
     state.macros.some((item) => !item.deleted) ||
     state.combos.some((item) => !item.deleted) ||
     state.behaviors.some((item) => !item.deleted)
+  );
+}
+
+function exportRuntimeDocumentFile() {
+  if (!state.runtime?.draft) {
+    setStatus("Connect a Runtime Config keyboard before exporting a snapshot.");
+    return;
+  }
+  let snapshot = state.runtime.draft;
+  try {
+    const { editorLayers, deviceLayerIds } = runtimeEditorLayers();
+    if (editorLayers.length) {
+      snapshot = replaceDraftKeymapOverrides({
+        snapshot,
+        capabilities: state.runtime.capabilities,
+        editorLayers,
+        deviceLayerIds,
+        behaviors: state.studio?.behaviors,
+        studioLayers: studioEncodeLayers(),
+      });
+    }
+  } catch (error) {
+    setStatus(`${error.message} Exporting runtime objects without a complete keymap overlay.`);
+  }
+  const document = encodeRuntimeDocument({
+    snapshot,
+    capabilities: state.runtime.capabilities,
+    profile: state.profile,
+    behaviors: state.studio?.behaviors,
+    studioLayers: studioEncodeLayers(),
+  });
+  const name = `${state.profile?.id || "keyboard"}-runtime.json`;
+  downloadText(name, stringifyRuntimeDocument(document), "application/json");
+  setStatus(`Downloaded ${name}. This is an editor document, not firmware Settings data.`);
+}
+
+function importRuntimeDocumentText(text) {
+  if (!state.runtime?.snapshot) {
+    throw new Error("Connect a Runtime Config keyboard before importing a runtime document.");
+  }
+  const document = parseRuntimeDocument(text);
+  const result = applyRuntimeDocument({
+    document,
+    snapshot: state.runtime.snapshot,
+    capabilities: state.runtime.capabilities,
+    behaviors: state.studio?.behaviors,
+    studioLayers: studioEncodeLayers(),
+  });
+  const skipped = result.skipped.map((item) => `${item.kind} ${item.id}: ${item.reason}`).join("\n");
+  const prompt = [
+    `Replace the local Runtime Config draft with this document (${result.imported.length} imported${result.skipped.length ? `, ${result.skipped.length} skipped` : ""})?`,
+    result.warnings.join("\n"),
+    skipped,
+    "Nothing is written to the keyboard until Apply.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (!window.confirm(prompt)) {
+    setStatus("Runtime document import cancelled.");
+    return;
+  }
+  state.runtime.draft = result.draft;
+  state.runtimeIssues = [];
+  let rewritten = 0;
+  for (const entry of result.keymap) {
+    const layerIndex = state.layers.findIndex((_, index) => {
+      const mapped = studioLayerIndex(index);
+      return mapped != null && state.studio?.layers?.[mapped]?.id === entry.layerId;
+    });
+    const selected = stockToSelectedIndex(state.runtime.capabilities, entry.stockPosition);
+    const binding = state.layers[layerIndex]?.bindings?.[selected];
+    if (binding && selected >= 0) {
+      binding.text = entry.binding;
+      rewritten++;
+    }
+  }
+  setDirty(true);
+  renderKeyboard();
+  renderInspect();
+  renderCombinations();
+  setStatus(
+    `Loaded runtime document into the local draft` +
+      (rewritten ? `, rewrote ${rewritten} key${rewritten === 1 ? "" : "s"}.` : ".") +
+      (result.skipped.length ? ` Skipped ${result.skipped.length}.` : "") +
+      " Apply to save on the keyboard."
   );
 }
 
@@ -4771,8 +5005,21 @@ function downloadText(name, text, type = "text/plain") {
 
 async function loadPickedKeymapFile(file) {
   if (!file) return;
+  const text = await file.text();
+  const trimmed = text.trim();
+  if (file.name.toLowerCase().endsWith(".json") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (isRuntimeDocument(parsed)) {
+        importRuntimeDocumentText(parsed);
+        return;
+      }
+    } catch (error) {
+      if (file.name.toLowerCase().endsWith(".json")) throw error;
+    }
+  }
   await ensureLayout();
-  loadKeymapText(await file.text(), file.name);
+  loadKeymapText(text, file.name);
 }
 
 function saveKeymap() {
@@ -5279,6 +5526,7 @@ function boot() {
       else openCombinationBuilder(null);
     });
     $("runtime-import")?.addEventListener("click", () => importKeymapToRuntimeDraft());
+    $("runtime-export")?.addEventListener("click", () => exportRuntimeDocumentFile());
     $("runtime-form")?.addEventListener("submit", (ev) => {
       ev.preventDefault();
       saveRuntimeEditor();

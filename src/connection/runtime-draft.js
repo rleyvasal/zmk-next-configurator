@@ -130,6 +130,55 @@ export function selectedToStockMap(capabilities, keyCount) {
   return stockPositions(capabilities, keyCount);
 }
 
+export function runtimeIssuesFromDiagnostics(diagnostics, capabilities) {
+  return (diagnostics || []).map((diagnostic) => {
+    if (diagnostic.runtimeObjectId) {
+      return {
+        kind: "object",
+        id: diagnostic.runtimeObjectId,
+        message: diagnostic.message || diagnostic.fieldPath || "invalid runtime object",
+        fieldPath: diagnostic.fieldPath,
+      };
+    }
+    if (diagnostic.comboId) {
+      return {
+        kind: "combo",
+        id: diagnostic.comboId,
+        message: diagnostic.message || diagnostic.fieldPath || "invalid runtime combo",
+        fieldPath: diagnostic.fieldPath,
+      };
+    }
+    if (diagnostic.keyLocation) {
+      return {
+        kind: "key",
+        layerId: diagnostic.keyLocation.layerId,
+        stockPosition: diagnostic.keyLocation.keyPosition,
+        selectedIndex: stockToSelectedIndex(capabilities, diagnostic.keyLocation.keyPosition),
+        message: diagnostic.message || diagnostic.fieldPath || "invalid keymap override",
+        fieldPath: diagnostic.fieldPath,
+      };
+    }
+    return { kind: "generic", message: diagnostic.message || diagnostic.fieldPath || "Runtime Config validation failed" };
+  });
+}
+
+export function runtimeIssuesFromDraftError(error) {
+  const issues = error?.issues || [];
+  if (!issues.length) return [{ kind: "generic", message: error?.message || "Runtime Config draft is invalid" }];
+  return issues.map((issue) => {
+    if (issue.position != null || issue.layerIndex != null) {
+      return {
+        kind: "key",
+        layerIndex: issue.layerIndex,
+        selectedIndex: issue.position,
+        message: issue.reason || error.message,
+        text: issue.text,
+      };
+    }
+    return { kind: "generic", message: issue.reason || error.message };
+  });
+}
+
 export function stockToSelectedIndex(capabilities, stockPosition) {
   const positions = capabilities?.selectedToStockPositions;
   if (!Array.isArray(positions)) return -1;
@@ -165,6 +214,28 @@ export function runtimeResourceUsage(snapshot) {
     ),
     keymapOverrides: snapshot?.keymapOverrides?.length || 0,
   };
+}
+
+export function runtimeResourceRows(usage, capabilities) {
+  const limits = capabilities?.limits || {};
+  return [
+    ["runtimeObjects", "maxRuntimeObjects", "objects"],
+    ["combos", "maxCombos", "combos"],
+    ["macroSteps", "maxMacroSteps", "macro steps"],
+    ["tapDanceActions", "maxTapDanceActions", "tap-dance actions"],
+    ["keymapOverrides", "maxKeymapOverrides", "keymap overrides"],
+  ].map(([usedKey, limitKey, label]) => {
+    const used = Number(usage?.[usedKey]) || 0;
+    const limit = Number(limits[limitKey]);
+    const finite = Number.isFinite(limit);
+    return {
+      key: usedKey,
+      label,
+      used,
+      limit: finite ? limit : null,
+      over: finite && used > limit,
+    };
+  });
 }
 
 export function runtimeResourceOverLimit(usage, capabilities) {

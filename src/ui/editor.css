@@ -620,8 +620,37 @@ main.workspace {
   margin: 0.15rem 0.2rem 0.35rem;
 }
 
-#runtime-import {
+#runtime-import,
+#runtime-export {
   margin-left: 0.2rem;
+}
+
+.runtime-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.7rem;
+  margin: 0.15rem 0.2rem 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.runtime-meter.over {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.runtime-errors {
+  margin: 0 0.2rem 0.4rem;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.combo-chip.runtime-error {
+  outline: 1px solid var(--danger);
+}
+
+.key-hit.runtime-error {
+  outline: 2px solid var(--danger);
 }
 
 .builder-block {

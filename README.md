@@ -51,7 +51,13 @@ object to many keys with `&rt <id>`. **Import from keymap** copies compatible `.
 macros, all-layer combos, mod-morphs, tap-dances, and simple hold-taps into that draft
 and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers and
 layer-filtered combos stay firmware-compiled so their timing and layer rules cannot
-silently change. Apply still uploads one complete snapshot; firmware rejects invalid
+silently change.
+
+The draft shows firmware resource use before Apply. Firmware validation errors are
+mapped onto the object or key that caused them. **Export snapshot** downloads a portable
+JSON editor document (symbolic bindings such as `&kp A`, not the private flash format).
+Load that `.json` while connected to restore the local draft; Apply is still the only
+persist step. Apply still uploads one complete snapshot; firmware rejects invalid
 generations without touching the active configuration.
 
 ## Add a keyboard
@@ -90,6 +96,7 @@ node tests/test_settings.mjs
 node tests/test_combine.mjs
 node tests/test_runtime_config.mjs
 node tests/test_runtime_import.mjs
+node tests/test_runtime_document.mjs
 ```
 
 ## Totem

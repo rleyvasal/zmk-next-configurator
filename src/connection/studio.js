@@ -23,6 +23,7 @@ import {
 import { bindingToCells, rememberStudioBehaviors } from "./studio-bind.js";
 import {
   RUNTIME_PROTOCOL_VERSION,
+  RuntimeValidationError,
   decodeRuntimeResponse,
   encodeRuntimeSnapshot,
 } from "./runtime-config.js";
@@ -443,8 +444,13 @@ export class StudioClient {
       );
       const validation = validationResponse.runtimeConfig?.validation;
       if (!validation?.valid) {
-        const errors = validation?.errors?.map((error) => error.message || error.fieldPath).filter(Boolean).join("; ");
-        throw new Error(`Runtime Config validation failed${errors ? `: ${errors}` : ""}`);
+        const diagnostics = validation?.errors || [];
+        const errors = diagnostics.map((error) => error.message || error.fieldPath).filter(Boolean).join("; ");
+        throw new RuntimeValidationError(
+          `Runtime Config validation failed${errors ? `: ${errors}` : ""}`,
+          diagnostics,
+          validation
+        );
       }
 
       const commitResponse = await this.call(
