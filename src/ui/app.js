@@ -96,6 +96,7 @@ import {
   upsertRuntimeCombo,
   upsertRuntimeObject,
 } from "../connection/runtime-draft.js";
+import { formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../connection/runtime-import.js";
 import {
   parseBinding,
   formatBinding,
@@ -4133,7 +4134,11 @@ function renderRuntimeChrome() {
   const title = $("combinations-title");
   const usage = $("runtime-usage");
   const filters = $("combo-filters");
+  const importBtn = $("runtime-import");
   if (title) title.textContent = state.runtime ? "Runtime objects" : "Combinations";
+  if (importBtn) {
+    importBtn.hidden = !state.runtime || !hasKeymapRuntimeSources();
+  }
   if (usage) {
     usage.hidden = !state.runtime;
     if (state.runtime) {
@@ -4170,6 +4175,64 @@ function renderRuntimeChrome() {
     }
     if (!buttons.some(([id]) => id === current)) state.combinationFilter = "all";
   }
+}
+
+function hasKeymapRuntimeSources() {
+  return (
+    state.macros.some((item) => !item.deleted) ||
+    state.combos.some((item) => !item.deleted) ||
+    state.behaviors.some((item) => !item.deleted)
+  );
+}
+
+function importKeymapToRuntimeDraft() {
+  if (!state.runtime?.draft) {
+    setStatus("Connect a Runtime Config keyboard before importing keymap objects.");
+    return;
+  }
+  if (!hasKeymapRuntimeSources()) {
+    setStatus("This keymap has no macros, combos, or behaviors to import.");
+    return;
+  }
+  const preview = importKeymapRuntimeObjects({
+    snapshot: state.runtime.draft,
+    capabilities: state.runtime.capabilities,
+    layers: state.layers,
+    macros: state.macros,
+    combos: state.combos,
+    behaviors: state.behaviors,
+    studioBehaviors: state.studio?.behaviors,
+    studioLayers: studioEncodeLayers(),
+  });
+  const summary = formatRuntimeImportSummary(preview);
+  if (!preview.imported.length) {
+    window.alert(summary);
+    setStatus("No keymap definitions could be imported into Runtime Config.");
+    return;
+  }
+  if (!window.confirm(summary)) {
+    setStatus("Import cancelled.");
+    return;
+  }
+  state.runtime.draft = preview.draft;
+  let rewritten = 0;
+  for (const rewrite of preview.rewrites) {
+    const binding = state.layers[rewrite.layerIndex]?.bindings?.[rewrite.keyIndex];
+    if (binding && binding.text === rewrite.from) {
+      binding.text = rewrite.to;
+      rewritten++;
+    }
+  }
+  setDirty(true);
+  renderKeyboard();
+  renderInspect();
+  renderCombinations();
+  setStatus(
+    `Imported ${preview.imported.length} definition${preview.imported.length === 1 ? "" : "s"} into the local draft` +
+      (rewritten ? `, rewrote ${rewritten} key${rewritten === 1 ? "" : "s"} to &rt.` : ".") +
+      (preview.skipped.length ? ` Skipped ${preview.skipped.length}.` : "") +
+      " Apply to save on the keyboard."
+  );
 }
 
 function openRuntimeCreator() {
@@ -5215,6 +5278,7 @@ function boot() {
       if (state.runtime) openRuntimeCreator();
       else openCombinationBuilder(null);
     });
+    $("runtime-import")?.addEventListener("click", () => importKeymapToRuntimeDraft());
     $("runtime-form")?.addEventListener("submit", (ev) => {
       ev.preventDefault();
       saveRuntimeEditor();

@@ -47,9 +47,12 @@ previous valid generation as on-device recovery fallback.
 
 When Runtime Config is available, **Runtime objects** edits macros, combos, hold-taps,
 mod-morphs, and tap-dances in a local draft. Unsupported types stay hidden. Assign an
-object to many keys with `&rt <id>`. Apply still uploads one complete snapshot; firmware
-rejects invalid generations without touching the active configuration. `.keymap` macros and
-combos remain file-only until a later import step.
+object to many keys with `&rt <id>`. **Import from keymap** copies compatible `.keymap`
+macros, all-layer combos, mod-morphs, tap-dances, and simple hold-taps into that draft
+and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers and
+layer-filtered combos stay firmware-compiled so their timing and layer rules cannot
+silently change. Apply still uploads one complete snapshot; firmware rejects invalid
+generations without touching the active configuration.
 
 ## Add a keyboard
 
@@ -86,6 +89,7 @@ node tests/test_discover.mjs
 node tests/test_settings.mjs
 node tests/test_combine.mjs
 node tests/test_runtime_config.mjs
+node tests/test_runtime_import.mjs
 ```
 
 ## Totem

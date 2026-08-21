@@ -620,6 +620,10 @@ main.workspace {
   margin: 0.15rem 0.2rem 0.35rem;
 }
 
+#runtime-import {
+  margin-left: 0.2rem;
+}
+
 .builder-block {
   margin: 0.3rem 0 0;
   padding: 0.3rem 0.45rem 0.35rem;
