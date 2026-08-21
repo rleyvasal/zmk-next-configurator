@@ -3,7 +3,7 @@
 Visual ZMK keymap editor. Geometry comes from a **layout profile**. Totem is the first keyboard, not the core.
 
 ```
-zmkmap/
+zmk-next-configurator/
 ├── layouts/            # keyboard definitions (Totem, …)
 ├── examples/           # sample .keymap files
 ├── src/
