@@ -173,20 +173,31 @@ if (mouseDraft.keymapOverrides.length !== 1 || mouseDraft.keymapOverrides[0].key
 if ((mouseDraft.skippedBindings || []).length !== 2) {
   throw new Error(`mouse skips ${JSON.stringify(mouseDraft.skippedBindings)}`);
 }
+const customDraft = replaceDraftKeymapOverrides({
+  snapshot,
+  capabilities: { ...draftCapabilities, limits: { maxKeymapOverrides: 6 } },
+  editorLayers: [{ bindings: [{ text: "&host_log_dump" }, { text: "&kp B" }, { text: "&kp C" }] }],
+  deviceLayerIds: [0],
+  behaviors: draftBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (customDraft.keymapOverrides.length !== 2 || (customDraft.skippedBindings || [])[0]?.text !== "&host_log_dump") {
+  throw new Error(`custom compiled bindings must stay stock ${JSON.stringify(customDraft.skippedBindings)}`);
+}
 let draftRejected = false;
 try {
   replaceDraftKeymapOverrides({
     snapshot,
     capabilities: draftCapabilities,
-    editorLayers: [{ bindings: [{ text: "&missing" }, { text: "&kp B" }, { text: "&kp C" }] }],
+    editorLayers: [{ bindings: [{ text: "&rt 999" }, { text: "&kp B" }, { text: "&kp C" }] }],
     deviceLayerIds: [0],
     behaviors: draftBehaviors,
     studioLayers: draftStudioLayers,
   });
 } catch (error) {
-  draftRejected = error instanceof RuntimeDraftError && error.issues[0]?.position === 0;
+  draftRejected = error instanceof RuntimeDraftError && /not in this draft/.test(error.message);
 }
-if (!draftRejected) throw new Error("runtime draft must report unencodable bindings");
+if (!draftRejected) throw new Error("runtime draft must reject unknown &rt object IDs");
 
 const request = decodeFields(encodeRuntimeRequestForTest(44, 2));
 if (fieldU32(request, 1) !== 44) throw new Error("outer runtime request ID");

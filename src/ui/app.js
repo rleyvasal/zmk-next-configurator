@@ -4040,7 +4040,7 @@ async function applyRuntimeAll() {
       ? `\n\n${skipped.join(", ")} cannot be added live and will remain editor-only. Download and flash to add ${skipped.length === 1 ? "it" : "them"}.`
       : "") +
     (skippedBindings.length
-      ? `\n\n${skippedBindings.length} mouse-move/scroll key${skippedBindings.length === 1 ? "" : "s"} stay firmware-compiled (no Studio parameter metadata).`
+      ? `\n\n${skippedBindings.length} key${skippedBindings.length === 1 ? "" : "s"} stay firmware-compiled because Studio cannot encode them live (mouse-move/scroll, custom behaviors such as &host_log_dump, …).`
       : "");
   if ((state.settings.confirmApply || skipped.length || skippedBindings.length || over) && !window.confirm(prompt)) {
     setStatus("Apply cancelled.");

@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Map</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=52" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=53" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -628,9 +628,9 @@
     </div>
     <div class="status" id="status">Load a keymap to begin.</div>
     <script type="module">
-      import { applyTheme } from "../../src/ui/theme.js?v=52";
+      import { applyTheme } from "../../src/ui/theme.js?v=53";
       applyTheme();
-      import("../../src/ui/app.js?v=52").catch((err) => {
+      import("../../src/ui/app.js?v=53").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

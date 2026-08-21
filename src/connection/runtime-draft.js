@@ -1,4 +1,4 @@
-import { bindingToCells, cellsToBinding, isFlashOnlyMouseBinding, parseBindingText } from "./studio-bind.js";
+import { bindingToCells, cellsToBinding, parseBindingText } from "./studio-bind.js";
 import {
   HOLD_TAP_FLAVOR,
   RUNTIME_OBJECT_TYPE,
@@ -567,6 +567,14 @@ function normalizeRuntimeCombo(combo, { behaviors, studioLayers, snapshot, capab
   };
 }
 
+export function isStockCompiledBindingReason(reason) {
+  const text = String(reason || "");
+  if (/runtime object .* is not in this draft/i.test(text)) return false;
+  return /no Studio parameter metadata|is not in this firmware|cannot be applied live|not live-editable|download and flash/i.test(
+    text
+  );
+}
+
 /**
  * Replace only a draft's ordinary keymap overlay from the editor. Runtime
  * objects and combos already in the draft remain intact until their dedicated
@@ -627,8 +635,8 @@ export function replaceDraftKeymapOverrides({
     }
   }
 
-  const skippedBindings = issues.filter((issue) => isFlashOnlyMouseBinding(issue.text, behaviors));
-  const fatal = issues.filter((issue) => !isFlashOnlyMouseBinding(issue.text, behaviors));
+  const skippedBindings = issues.filter((issue) => isStockCompiledBindingReason(issue.reason));
+  const fatal = issues.filter((issue) => !isStockCompiledBindingReason(issue.reason));
   if (fatal.length) {
     const first = fatal[0];
     const where = first.position == null ? `layer ${first.layerIndex}` : `L${first.layerIndex} P${first.position}`;
