@@ -1,4 +1,4 @@
-# ZMK Map
+# ZMK Next Configurator
 
 Visual ZMK keymap editor. Geometry comes from a **layout profile**. Totem is the first keyboard, not the core.
 
