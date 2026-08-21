@@ -1,0 +1,235 @@
+import {
+  HOLD_TAP_FLAVOR,
+  compiledAction,
+  decodeRuntimeSnapshot,
+  encodeRuntimeSnapshot,
+  runtimeObjectAction,
+} from "../src/connection/runtime-config.js";
+import { RuntimeDraftError, replaceDraftKeymapOverrides } from "../src/connection/runtime-draft.js";
+import {
+  concatBytes,
+  decodeFields,
+  encodeBytes,
+  encodeRepeatedUint32,
+  encodeSub,
+  encodeUint32,
+  fieldMsgs,
+  fieldU32,
+} from "../src/connection/pb.js";
+import { encodeRuntimeRequestForTest, parseResponse } from "../src/connection/studio.js";
+
+const fingerprint = new Uint8Array(Array.from({ length: 16 }, (_, index) => index + 1));
+const kpA = compiledAction(7, 0x070004);
+const kpB = compiledAction(7, 0x070005);
+const kpC = compiledAction(7, 0x070006);
+
+const snapshot = {
+  persistenceSchemaVersion: 6,
+  generation: 21,
+  capabilityFingerprint: fingerprint,
+  keymapOverrides: [{ layerId: 1, keyPosition: 4, action: runtimeObjectAction(13) }],
+  runtimeObjects: [
+    {
+      id: 11,
+      type: "modMorph",
+      modifiers: 2,
+      normalAction: kpA,
+      morphedAction: kpB,
+    },
+    {
+      id: 12,
+      type: "macro",
+      steps: [
+        { type: "tap", action: kpA },
+        { type: "wait", ms: 0 },
+        { type: "press", action: kpB },
+        { type: "release", action: kpB },
+        { type: "pauseUntilRelease" },
+      ],
+    },
+    {
+      id: 13,
+      type: "holdTap",
+      tapAction: kpA,
+      holdAction: kpB,
+      flavor: HOLD_TAP_FLAVOR.BALANCED,
+      tappingTermMs: 200,
+      quickTapMs: 125,
+      requirePriorIdleMs: 50,
+    },
+    {
+      id: 14,
+      type: "tapDance",
+      tappingTermMs: 180,
+      actions: [
+        { tapCount: 1, tapAction: kpA, holdAction: kpB },
+        { tapCount: 2, tapAction: kpB, holdAction: kpC },
+      ],
+    },
+  ],
+  combos: [
+    {
+      id: 31,
+      keyPositions: [0, 4],
+      timeoutMs: 50,
+      output: runtimeObjectAction(12),
+      slowRelease: true,
+      requirePriorIdleMs: 20,
+    },
+  ],
+};
+
+const wireSnapshot = encodeRuntimeSnapshot(snapshot);
+const roundTrip = decodeRuntimeSnapshot(wireSnapshot);
+if (roundTrip.persistenceSchemaVersion !== 6 || roundTrip.generation !== 21) {
+  throw new Error(`snapshot header ${JSON.stringify(roundTrip)}`);
+}
+if (roundTrip.capabilityFingerprint.length !== 16 || roundTrip.capabilityFingerprint[15] !== 16) {
+  throw new Error("snapshot fingerprint");
+}
+if (roundTrip.keymapOverrides[0].action.runtimeObjectId !== 13) throw new Error("keymap action");
+if (roundTrip.runtimeObjects[1].steps[1].type !== "wait" || roundTrip.runtimeObjects[1].steps[1].ms !== 0) {
+  throw new Error(`zero wait did not round-trip ${JSON.stringify(roundTrip.runtimeObjects[1])}`);
+}
+if (roundTrip.runtimeObjects[3].actions[1].holdAction.compiledBehavior.param1 !== 0x070006) {
+  throw new Error("tap-dance action");
+}
+if (roundTrip.combos[0].output.runtimeObjectId !== 12) throw new Error("combo action");
+if (roundTrip.combos[0].keyPositions.join(",") !== "0,4") throw new Error("combo positions");
+
+let rejectedLayers = false;
+try {
+  encodeRuntimeSnapshot({ ...snapshot, layers: [{ layerId: 1, name: "nav", order: 1 }] });
+} catch {
+  rejectedLayers = true;
+}
+if (!rejectedLayers) throw new Error("layer metadata must remain unsupported");
+
+const draftCapabilities = {
+  selectedPositionCount: 3,
+  selectedToStockPositions: [2, 0, 1],
+  limits: { maxKeymapOverrides: 6 },
+};
+const draftBehaviors = [
+  { id: 7, displayName: "Key Press", param1: [{ hid: true }], param2: [{ nil: true }] },
+  { id: 9, displayName: "Momentary Layer", param1: [{ layer: true }], param2: [{ nil: true }] },
+];
+const draftStudioLayers = [{ id: 0, name: "base" }, { id: 2, name: "nav" }];
+const editorLayers = [
+  { bindings: [{ text: "&kp A" }, { text: "&kp B" }, { text: "&mo NAV" }] },
+  { bindings: [{ text: "&kp C" }, { text: "&kp D" }, { text: "&kp E" }] },
+];
+const editorDraft = replaceDraftKeymapOverrides({
+  snapshot,
+  capabilities: draftCapabilities,
+  editorLayers,
+  deviceLayerIds: [0, 2],
+  behaviors: draftBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (
+  editorDraft.keymapOverrides.length !== 6 ||
+  editorDraft.keymapOverrides.slice(0, 3).map((entry) => entry.keyPosition).join(",") !== "2,0,1" ||
+  editorDraft.keymapOverrides[2].action.compiledBehavior.param1 !== 2 ||
+  editorDraft.runtimeObjects.length !== snapshot.runtimeObjects.length ||
+  editorDraft.combos.length !== snapshot.combos.length
+) {
+  throw new Error(`runtime draft ${JSON.stringify(editorDraft)}`);
+}
+let draftRejected = false;
+try {
+  replaceDraftKeymapOverrides({
+    snapshot,
+    capabilities: draftCapabilities,
+    editorLayers: [{ bindings: [{ text: "&missing" }, { text: "&kp B" }, { text: "&kp C" }] }],
+    deviceLayerIds: [0],
+    behaviors: draftBehaviors,
+    studioLayers: draftStudioLayers,
+  });
+} catch (error) {
+  draftRejected = error instanceof RuntimeDraftError && error.issues[0]?.position === 0;
+}
+if (!draftRejected) throw new Error("runtime draft must report unencodable bindings");
+
+const request = decodeFields(encodeRuntimeRequestForTest(44, 2));
+if (fieldU32(request, 1) !== 44) throw new Error("outer runtime request ID");
+const runtimeRequest = fieldMsgs(request, 6)[0];
+if (!runtimeRequest || fieldU32(runtimeRequest, 1) !== 44 || !fieldMsgs(runtimeRequest, 2).length) {
+  throw new Error("runtime request envelope");
+}
+const resetRequest = decodeFields(encodeRuntimeRequestForTest(45, 10, encodeUint32(1, 21)));
+const resetBody = fieldMsgs(fieldMsgs(resetRequest, 6)[0], 10)[0];
+if (fieldU32(resetBody, 1) !== 21) throw new Error("reset request generation");
+
+const capabilities = concatBytes([
+  encodeUint32(1, 1),
+  encodeUint32(2, 6),
+  encodeBytes(3, fingerprint),
+  encodeUint32(4, 1),
+  encodeUint32(4, 4),
+  encodeUint32(5, 7),
+  encodeSub(
+    6,
+    concatBytes([
+      encodeUint32(1, 64),
+      encodeUint32(2, 32),
+      encodeUint32(3, 5),
+      encodeUint32(4, 512),
+      encodeUint32(5, 4096),
+      encodeUint32(6, 5),
+      encodeUint32(7, 256),
+      encodeUint32(8, 64),
+    ])
+  ),
+  encodeUint32(8, 3),
+  encodeRepeatedUint32(9, 2),
+  encodeRepeatedUint32(9, 0),
+  encodeRepeatedUint32(9, 1),
+]);
+const runtimeResponse = concatBytes([encodeUint32(1, 44), encodeSub(3, capabilities)]);
+const response = parseResponse(
+  encodeSub(1, concatBytes([encodeUint32(1, 44), encodeSub(6, runtimeResponse)]))
+);
+if (
+  response.requestId !== 44 ||
+  response.runtimeConfig?.requestId !== 44 ||
+  response.runtimeConfig?.capabilities?.limits.maxTapDanceActions !== 64 ||
+  response.runtimeConfig?.capabilities?.selectedPositionCount !== 3 ||
+  response.runtimeConfig?.capabilities?.selectedToStockPositions.join(",") !== "2,0,1" ||
+  response.runtimeConfig?.capabilities?.supportedObjectTypes.join(",") !== "1,4"
+) {
+  throw new Error(`runtime response ${JSON.stringify(response)}`);
+}
+
+const resetResponse = parseResponse(
+  encodeSub(
+    1,
+    concatBytes([
+      encodeUint32(1, 45),
+      encodeSub(
+        6,
+        concatBytes([
+          encodeUint32(1, 45),
+          encodeSub(
+            11,
+            concatBytes([
+              encodeUint32(1, 22),
+              new Uint8Array([0x10, 0x01]),
+              encodeUint32(3, 2),
+              encodeSub(4, concatBytes([encodeUint32(1, 4), encodeUint32(2, 21), encodeUint32(3, 22)])),
+            ])
+          ),
+        ])
+      ),
+    ])
+  )
+);
+if (
+  !resetResponse.runtimeConfig?.reset?.saved ||
+  resetResponse.runtimeConfig.reset.generation !== 22 ||
+  resetResponse.runtimeConfig.reset.status?.pendingGeneration !== 22
+) {
+  throw new Error(`reset response ${JSON.stringify(resetResponse)}`);
+}
+
+console.log("runtime-config client codec tests passed");

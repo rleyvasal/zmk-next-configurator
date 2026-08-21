@@ -7,10 +7,13 @@ import {
   concatBytes,
   decodeFields,
   encodeBool,
+  encodeBytes,
   encodeInt32,
+  encodeKey,
   encodeSint32,
   encodeSub,
   encodeUint32,
+  encodeVarint,
   fieldMsgs,
   fieldNums,
   fieldStr,
@@ -18,6 +21,11 @@ import {
   unzigzag32,
 } from "./pb.js";
 import { bindingToCells, rememberStudioBehaviors } from "./studio-bind.js";
+import {
+  RUNTIME_PROTOCOL_VERSION,
+  decodeRuntimeResponse,
+  encodeRuntimeSnapshot,
+} from "./runtime-config.js";
 
 const SOF = 0xab;
 const ESC = 0xac;
@@ -85,6 +93,15 @@ function encodeKeymap(id, typeField, body = new Uint8Array()) {
   return encodeRequest(id, 5, inner);
 }
 
+function encodeRuntime(id, typeField, body = new Uint8Array()) {
+  // Runtime Config uses message-valued oneofs, including for empty requests.
+  const request = body.length
+    ? encodeSub(typeField, body)
+    : concatBytes([encodeKey(typeField, 2), encodeVarint(0)]);
+  const inner = concatBytes([encodeUint32(1, id), request]);
+  return encodeRequest(id, 6, inner);
+}
+
 function parseParamDesc(fields) {
   const name = fieldStr(fields, 1);
   const out = { name };
@@ -146,6 +163,7 @@ function parseResponse(bytes) {
   const core = fieldMsgs(rr, 3)[0];
   const behaviors = fieldMsgs(rr, 4)[0];
   const keymap = fieldMsgs(rr, 5)[0];
+  const runtimeConfig = fieldMsgs(rr, 6)[0];
   const out = { requestId };
   if (meta) {
     if (fieldU32(meta, 1)) out.noResponse = true;
@@ -184,6 +202,7 @@ function parseResponse(bytes) {
     }
     if (fieldU32(keymap, 4) && !save) out.saveOk = true;
   }
+  if (runtimeConfig) out.runtimeConfig = decodeRuntimeResponse(runtimeConfig);
   return out;
 }
 
@@ -259,6 +278,18 @@ export class StudioClient {
     await this.writer.write(framed);
     const resp = await p;
     if (resp.error) throw new Error(`Studio error ${resp.error}`);
+    if (resp.runtimeConfig?.error) {
+      const error = resp.runtimeConfig.error;
+      const details = error.diagnostics
+        .map((diagnostic) => diagnostic.message || diagnostic.fieldPath)
+        .filter(Boolean)
+        .join("; ");
+      throw new Error(
+        `Runtime Config error ${error.code}${error.message ? `: ${error.message}` : ""}${
+          details ? ` (${details})` : ""
+        }`
+      );
+    }
     if (resp.noResponse) throw new Error("Studio sent no_response");
     return resp;
   }
@@ -323,6 +354,143 @@ export class StudioClient {
     return true;
   }
 
+  async getRuntimeCapabilities({ timeoutMs = 10000 } = {}) {
+    const resp = await this.call((id) => encodeRuntime(id, 2), timeoutMs);
+    const capabilities = resp.runtimeConfig?.capabilities;
+    if (!capabilities) throw new Error("Keyboard did not return Runtime Config capabilities");
+    if (capabilities.protocolVersion !== RUNTIME_PROTOCOL_VERSION) {
+      throw new Error(
+        `Runtime Config protocol ${capabilities.protocolVersion} is incompatible with this editor (needs ${RUNTIME_PROTOCOL_VERSION})`
+      );
+    }
+    this.runtimeCapabilities = capabilities;
+    return capabilities;
+  }
+
+  async getRuntimeConfigStatus({ timeoutMs = 10000 } = {}) {
+    const resp = await this.call((id) => encodeRuntime(id, 3), timeoutMs);
+    const status = resp.runtimeConfig?.status;
+    if (!status) throw new Error("Keyboard did not return Runtime Config status");
+    this.runtimeStatus = status;
+    return status;
+  }
+
+  async getRuntimeConfig({ timeoutMs = 10000 } = {}) {
+    const resp = await this.call((id) => encodeRuntime(id, 4), timeoutMs);
+    const config = resp.runtimeConfig?.config;
+    if (!config?.snapshot || !config.status) {
+      throw new Error("Keyboard did not return a Runtime Config snapshot");
+    }
+    this.runtimeSnapshot = config.snapshot;
+    this.runtimeStatus = config.status;
+    return config;
+  }
+
+  async applyRuntimeSnapshot(snapshot, { expectedActiveGeneration } = {}) {
+    if (!snapshot || typeof snapshot !== "object") {
+      throw new Error("Runtime Config snapshot is required");
+    }
+    const uploadSnapshot = { ...snapshot, generation: 0 };
+    const bytes = encodeRuntimeSnapshot(uploadSnapshot);
+    const expected =
+      expectedActiveGeneration ?? this.runtimeStatus?.activeGeneration ?? snapshot.generation ?? 0;
+    let updateId = 0;
+
+    try {
+      const beginResponse = await this.call(
+        (id) =>
+          encodeRuntime(
+            id,
+            5,
+            concatBytes([
+              encodeUint32(1, expected),
+              encodeUint32(2, bytes.length),
+            ])
+          ),
+        10000
+      );
+      const begin = beginResponse.runtimeConfig?.begin;
+      if (!begin?.updateId || !begin.maxChunkBytes) {
+        throw new Error("Keyboard did not accept the Runtime Config update");
+      }
+      updateId = begin.updateId;
+
+      for (let offset = 0; offset < bytes.length; ) {
+        const chunk = bytes.slice(offset, offset + begin.maxChunkBytes);
+        const chunkResponse = await this.call(
+          (id) =>
+            encodeRuntime(
+              id,
+              6,
+              concatBytes([
+                encodeUint32(1, updateId),
+                encodeUint32(2, offset),
+                encodeBytes(3, chunk),
+              ])
+            ),
+          10000
+        );
+        const accepted = chunkResponse.runtimeConfig?.chunk;
+        if (!accepted || accepted.acceptedBytes !== chunk.length || accepted.nextOffset !== offset + chunk.length) {
+          throw new Error("Keyboard rejected a Runtime Config upload chunk");
+        }
+        offset = accepted.nextOffset;
+      }
+
+      const validationResponse = await this.call(
+        (id) => encodeRuntime(id, 7, encodeUint32(1, updateId)),
+        10000
+      );
+      const validation = validationResponse.runtimeConfig?.validation;
+      if (!validation?.valid) {
+        const errors = validation?.errors?.map((error) => error.message || error.fieldPath).filter(Boolean).join("; ");
+        throw new Error(`Runtime Config validation failed${errors ? `: ${errors}` : ""}`);
+      }
+
+      const commitResponse = await this.call(
+        (id) => encodeRuntime(id, 8, encodeUint32(1, updateId)),
+        10000
+      );
+      const commit = commitResponse.runtimeConfig?.commit;
+      if (!commit?.saved) throw new Error("Keyboard did not save the Runtime Config update");
+      this.runtimeStatus = commit.status || this.runtimeStatus;
+      this.runtimeSnapshot = { ...uploadSnapshot, generation: commit.generation };
+      return { validation, commit };
+    } catch (error) {
+      if (updateId) {
+        try {
+          await this.call((id) => encodeRuntime(id, 9, encodeUint32(1, updateId)), 10000);
+        } catch {
+          // The primary request failure is more useful; a retry can recover the staged update.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async resetRuntimeConfig({ expectedActiveGeneration } = {}) {
+    const expected = expectedActiveGeneration ?? this.runtimeStatus?.activeGeneration ?? 0;
+    const response = await this.call(
+      (id) => encodeRuntime(id, 10, encodeUint32(1, expected)),
+      10000
+    );
+    const reset = response.runtimeConfig?.reset;
+    if (!reset?.saved) throw new Error("Keyboard did not restore the stock Runtime Config");
+    this.runtimeStatus = reset.status || this.runtimeStatus;
+    if (this.runtimeCapabilities) {
+      this.runtimeSnapshot = {
+        persistenceSchemaVersion: this.runtimeCapabilities.persistenceSchemaVersion,
+        generation: reset.generation,
+        capabilityFingerprint: this.runtimeCapabilities.capabilityFingerprint,
+        keymapOverrides: [],
+        layers: [],
+        runtimeObjects: [],
+        combos: [],
+      };
+    }
+    return reset;
+  }
+
   async close() {
     this.closed = true;
     this.failAll(new Error("disconnected"));
@@ -381,6 +549,10 @@ export function encodeSetLayerBindingForTest(requestId, layerId, keyPosition, bi
     ),
   ]);
   return encodeKeymap(requestId, 2, body);
+}
+
+export function encodeRuntimeRequestForTest(requestId, typeField, body = new Uint8Array()) {
+  return encodeRuntime(requestId, typeField, body);
 }
 
 export { parseResponse };

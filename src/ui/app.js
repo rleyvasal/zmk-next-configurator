@@ -74,6 +74,7 @@ import {
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio } from "../connection/studio.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
+import { RuntimeDraftError, replaceDraftKeymapOverrides } from "../connection/runtime-draft.js";
 import {
   parseBinding,
   formatBinding,
@@ -123,6 +124,7 @@ const state = {
   repoDiscover: null,
   category: CATEGORIES[0].id,
   studio: null,
+  runtime: null,
   liveWarned: false,
   comboDraft: null,
   behaviorDraft: null,
@@ -204,6 +206,17 @@ function updateStudioButtons() {
   const on = !!state.studio;
   $("studio-connect").textContent = on ? "Disconnect" : "Connect";
   $("studio-apply").disabled = !on;
+  const reset = $("runtime-reset");
+  if (reset) {
+    reset.hidden = !state.runtime;
+    reset.disabled = !on || !state.runtime;
+  }
+  const hint = $("live-hint");
+  if (hint) {
+    hint.innerHTML = state.runtime
+      ? "<strong>Runtime Config</strong> saves one complete configuration, including its ordinary keymap overlay. It activates only after the keyboard is idle. Runtime object editors are being added incrementally."
+      : "<strong>Live Apply</strong> works for existing bindings only. New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.";
+  }
 }
 
 function updateHistoryButtons() {
@@ -3693,6 +3706,10 @@ function updateFlashBanner() {
 
 function queueLive(layer, index, text) {
   if (!state.studio) return;
+  // A Runtime Config device commits complete immutable generations. Keep
+  // edits local until Apply instead of mixing legacy per-key writes into its
+  // runtime overlay.
+  if (state.runtime) return;
   if (studioLayerIndex(layer) == null) {
     const name = displayLayerName(state.layers[layer]?.id);
     setStatus(`${name} is not on this keyboard. Apply cannot write it — download the keymap and flash firmware.`);
@@ -3738,10 +3755,34 @@ function warnLiveOnce() {
   setStudioLabel("Connected · settings written", "on");
 }
 
+async function probeRuntimeConfig(client) {
+  try {
+    const capabilities = await client.getRuntimeCapabilities({ timeoutMs: 1500 });
+    const config = await client.getRuntimeConfig({ timeoutMs: 3000 });
+    const keyCount = client.layers?.[0]?.bindings?.length || 0;
+    if (
+      !keyCount ||
+      capabilities.selectedPositionCount !== keyCount ||
+      capabilities.selectedToStockPositions?.length !== keyCount
+    ) {
+      // An older Runtime Config v1 build can understand the RPC but cannot
+      // safely translate the editor's selected layout into stock positions.
+      // Keep the established Studio path available instead of guessing.
+      return null;
+    }
+    return { capabilities, snapshot: config.snapshot, status: config.status };
+  } catch {
+    // Runtime Config is an optional ZMK Next subsystem. Ordinary Studio
+    // firmware deliberately keeps its existing connection path untouched.
+    return null;
+  }
+}
+
 async function connectOrDisconnect() {
   if (state.studio) {
     await state.studio.close();
     state.studio = null;
+    state.runtime = null;
     state.deviceLayerCount = 0;
     setStudioLabel("Not connected");
     $("session").classList.remove("live");
@@ -3756,14 +3797,16 @@ async function connectOrDisconnect() {
     const client = await connectStudio();
     state.studio = client;
     rememberDeviceLayers(client);
+    state.runtime = await probeRuntimeConfig(client);
     $("kb-name").textContent = client.deviceName || state.profile?.name || "Keyboard";
-    setStudioLabel("Connected", "on");
+    setStudioLabel(state.runtime ? "Connected · Runtime Config ready" : "Connected", "on");
     $("session").classList.add("live");
     updateStudioButtons();
     if (state.source === "file" || state.source === "github") {
       updateChrome();
       setStatus(
-        `Connected to ${client.deviceName}. Still ${sourceStatusText()}. Apply to push this keymap, or Load from Keyboard to read the board.`
+        `Connected to ${client.deviceName}. Still ${sourceStatusText()}. Apply to push this keymap, or Load from Keyboard to read the board.` +
+          (state.runtime ? " Runtime Config is available." : "")
       );
       return;
     }
@@ -3801,10 +3844,122 @@ async function connectOrDisconnect() {
   }
 }
 
+function runtimeEditorLayers() {
+  const editorLayers = [];
+  const deviceLayerIds = [];
+  const skipped = [];
+  for (let layerIndex = 0; layerIndex < state.layers.length; layerIndex++) {
+    const mapped = studioLayerIndex(layerIndex);
+    const deviceLayer = mapped == null ? null : state.studio?.layers?.[mapped];
+    if (!deviceLayer) {
+      skipped.push(displayLayerName(state.layers[layerIndex]?.id));
+      continue;
+    }
+    editorLayers.push(state.layers[layerIndex]);
+    deviceLayerIds.push(deviceLayer.id);
+  }
+  return { editorLayers, deviceLayerIds, skipped };
+}
+
+async function applyRuntimeAll() {
+  if (!state.studio || !state.runtime) return;
+  const { editorLayers, deviceLayerIds, skipped } = runtimeEditorLayers();
+  if (!editorLayers.length) {
+    setStatus("No editor layers are present in this firmware. Download the keymap and flash to add them.");
+    return;
+  }
+  const prompt =
+    "Save one complete Runtime Config snapshot to the keyboard? It will persist through reboot and activate only when the keyboard is idle." +
+    (skipped.length
+      ? `\n\n${skipped.join(", ")} cannot be added live and will remain editor-only. Download and flash to add ${skipped.length === 1 ? "it" : "them"}.`
+      : "");
+  if ((state.settings.confirmApply || skipped.length) && !window.confirm(prompt)) {
+    setStatus("Apply cancelled.");
+    return;
+  }
+
+  let draft;
+  try {
+    draft = replaceDraftKeymapOverrides({
+      snapshot: state.runtime.snapshot,
+      capabilities: state.runtime.capabilities,
+      editorLayers,
+      deviceLayerIds,
+      behaviors: state.studio.behaviors,
+      studioLayers: studioEncodeLayers(),
+    });
+  } catch (error) {
+    if (error instanceof RuntimeDraftError) {
+      const first = error.issues?.[0];
+      if (first?.text && isFlashRequiredReason(first.reason)) {
+        showFlashNeededForBinding(first.text, first.reason);
+      }
+    }
+    throw error;
+  }
+
+  setStatus("Validating and saving Runtime Config snapshot…");
+  const { validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
+    expectedActiveGeneration: state.runtime.snapshot.generation,
+  });
+  state.runtime = {
+    ...state.runtime,
+    snapshot: state.studio.runtimeSnapshot,
+    status: commit.status || state.studio.runtimeStatus,
+  };
+  const pending = state.runtime.status?.pendingGeneration === commit.generation;
+  setStudioLabel(
+    pending ? "Connected · config saved, waiting for idle" : "Connected · Runtime Config active",
+    "on"
+  );
+  updateStudioButtons();
+  const usage = validation.resourceUsage?.keymapOverrides;
+  setStatus(
+    `Saved Runtime Config generation ${commit.generation}` +
+      (pending ? "; waiting for keyboard idle before activation." : " and activated.") +
+      (usage?.limit ? ` Keymap overrides: ${usage.used}/${usage.limit}.` : "")
+  );
+}
+
+async function restoreRuntimeStock() {
+  if (!state.studio || !state.runtime) return;
+  if (
+    !window.confirm(
+      "Restore the compiled stock configuration? This saves an empty Runtime Config generation. The previous valid generation remains available for on-device recovery."
+    )
+  ) {
+    setStatus("Restore stock cancelled.");
+    return;
+  }
+  setStatus("Saving stock Runtime Config generation…");
+  const reset = await state.studio.resetRuntimeConfig({
+    expectedActiveGeneration: state.runtime.snapshot.generation,
+  });
+  state.runtime = {
+    ...state.runtime,
+    snapshot: state.studio.runtimeSnapshot,
+    status: reset.status || state.studio.runtimeStatus,
+  };
+  const pending = state.runtime.status?.pendingGeneration === reset.generation;
+  setStudioLabel(
+    pending ? "Connected · stock saved, waiting for idle" : "Connected · stock configuration active",
+    "on"
+  );
+  updateStudioButtons();
+  setStatus(
+    `Saved stock Runtime Config generation ${reset.generation}` +
+      (pending ? "; waiting for keyboard idle before activation." : ".") +
+      " The editor still shows your local keymap."
+  );
+}
+
 async function applyLiveAll() {
   if (!state.studio) {
     setStatus("Connect the left half first.");
     return;
+  }
+  if (state.runtime) {
+    return applyRuntimeAll();
   }
   const extra = extraEditorLayers();
   const prompt = extra.length
@@ -4373,6 +4528,9 @@ function boot() {
     });
     $("studio-apply")?.addEventListener("click", () => {
       applyLiveAll().catch((err) => setStatus(err.message));
+    });
+    $("runtime-reset")?.addEventListener("click", () => {
+      restoreRuntimeStock().catch((err) => setStatus(err.message));
     });
     $("combo-new")?.addEventListener("click", () => openCombinationBuilder(null));
     document.querySelectorAll("[data-builder-step]").forEach((el) => {

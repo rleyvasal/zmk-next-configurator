@@ -40,6 +40,15 @@ export function encodeUint32(field, value) {
   return concatBytes([encodeKey(field, 0), encodeVarint(value)]);
 }
 
+/**
+ * Repeated scalar fields must retain zero: proto3 only elides zero for an
+ * optional/singular scalar. Position 0 is valid for runtime combos and
+ * physical-layout mappings.
+ */
+export function encodeRepeatedUint32(field, value) {
+  return concatBytes([encodeKey(field, 0), encodeVarint(value)]);
+}
+
 export function encodeSint32(field, value) {
   if (!value) return new Uint8Array();
   return concatBytes([encodeKey(field, 0), encodeVarint(zigzag32(value))]);
@@ -141,4 +150,9 @@ export function fieldStr(fields, n) {
 export function fieldU32(fields, n, fallback = 0) {
   const nums = fieldNums(fields, n);
   return nums.length ? nums[0] : fallback;
+}
+
+export function fieldBytes(fields, n) {
+  const value = (fields.get(n) || []).find((entry) => entry.wire === 2);
+  return value ? new Uint8Array(value.v) : new Uint8Array();
 }

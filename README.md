@@ -38,7 +38,13 @@ Pick a keyboard in the session panel. **Reload sample** loads that profile’s e
 
 A repo can ship `zmk-map-layout.json` or `layout.json` so any keyboard loads without a built-in. Raw `.dtsi` is parsed for `key_physical_attrs` and, if needed, the `zmk,matrix-transform` map.
 
-Live **Connect / Apply** is optional (Chrome Web Serial). Combos, new behaviors, and new macros are file-only until you flash.
+Live **Connect / Apply** is optional (Chrome Web Serial). Standard ZMK Studio firmware can
+update only existing bindings. On ZMK Next Runtime Config firmware, the editor detects the
+capability, translates the selected layout through the device-reported stock-position map,
+then validates and saves a complete immutable snapshot that activates only when the keyboard
+is idle. **Restore stock configuration** writes an empty runtime generation while retaining the
+previous valid generation as on-device recovery fallback. Runtime object editors are added
+incrementally; their existing device objects are preserved while ordinary bindings are applied.
 
 ## Add a keyboard
 
@@ -74,6 +80,7 @@ node tests/test_layout.mjs
 node tests/test_discover.mjs
 node tests/test_settings.mjs
 node tests/test_combine.mjs
+node tests/test_runtime_config.mjs
 ```
 
 ## Totem
