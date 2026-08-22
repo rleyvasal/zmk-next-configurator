@@ -219,20 +219,14 @@ if (parsedReadback.behaviorId !== 7 || parsedReadback.rawBehaviorId !== zigzag32
   throw new Error(`sint32 readback ${JSON.stringify(parsedReadback)}`);
 }
 
-// SetLayerBindingResponse is nested under the keymap response. A flattened
-// read would miss INVALID_PARAMETERS and make the UI claim a rejected write
-// succeeded.
+// SetLayerBindingResponse is a plain enum on the wire (varint), not a
+// submessage. A rejected write (INVALID_PARAMETERS) must not read back as
+// success just because the response has no other fields set.
 const rejectedSetResponse = parseResponse(
-  encodeSub(
-    1,
-    concatBytes([
-      encodeUint32(1, 2),
-      encodeSub(5, encodeSub(2, encodeUint32(1, 3))),
-    ])
-  )
+  encodeSub(1, concatBytes([encodeUint32(1, 2), encodeSub(5, encodeUint32(2, 3))]))
 );
 if (rejectedSetResponse.setLayerBinding !== 3) {
-  throw new Error(`nested set-layer result ${JSON.stringify(rejectedSetResponse)}`);
+  throw new Error(`set-layer rejection ${JSON.stringify(rejectedSetResponse)}`);
 }
 
 // The wire value can collide with another local behavior ID. The decoded

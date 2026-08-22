@@ -195,14 +195,10 @@ function parseResponse(bytes) {
   if (keymap) {
     const km = fieldMsgs(keymap, Fk.Response.get_keymap)[0];
     if (km) out.keymap = parseKeymap(km);
-    // SetLayerBindingResponse is on the wire as the plain enum (varint), per
-    // the current .proto. The message-shaped probe below has no schema
-    // backing it — it's tolerance for older/nonstandard firmware that may
-    // have flattened the response into a submessage; field 1 there isn't a
-    // generated constant because no such message exists in the contract.
-    const setBinding = fieldMsgs(keymap, Fk.Response.set_layer_binding)[0];
-    if (setBinding) out.setLayerBinding = fieldU32(setBinding, 1);
-    else if (fieldNums(keymap, Fk.Response.set_layer_binding).length) {
+    // SetLayerBindingResponse is the plain enum SET_LAYER_BINDING_RESP_* on
+    // the wire (a varint), in both zmk-next-messages and real upstream
+    // zmk-studio-messages — never a submessage.
+    if (fieldNums(keymap, Fk.Response.set_layer_binding).length) {
       out.setLayerBinding = fieldU32(keymap, Fk.Response.set_layer_binding);
     }
     const save = fieldMsgs(keymap, Fk.Response.save_changes)[0];
