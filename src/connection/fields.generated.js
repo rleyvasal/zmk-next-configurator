@@ -1,7 +1,7 @@
 // GENERATED FILE -- do not edit by hand.
 // Produced by zmk-next-messages/tools/gen_js_fields.py from proto/zmk/*.proto.
 // Regenerate with zmk-next-configurator/scripts/sync-messages.sh.
-// Source: zmk-next-messages @ b97e5aac3e235d77455636ee5959e56385ddb6d5
+// Source: zmk-next-messages @ af21e12b75d15e15652a636094c7f7b00a5ca7c2
 
 export const FIELDS = Object.freeze({
   "meta": Object.freeze({

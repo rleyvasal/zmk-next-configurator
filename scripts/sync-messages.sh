@@ -32,7 +32,7 @@ if ! command -v "$PROTOC" >/dev/null 2>&1; then
   echo "SKIPPED: protoc not found (set PROTOC=...)" >&2
   exit 0
 fi
-if [ ! -x "$PYTHON" ]; then
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
   echo "SKIPPED: python not found at $PYTHON (set PYTHON=...)" >&2
   exit 0
 fi
