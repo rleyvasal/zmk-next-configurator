@@ -6323,7 +6323,7 @@ function boot() {
     });
     $("download").addEventListener("click", saveKeymap);
     $("layer-offline-download")?.addEventListener("click", saveKeymap);
-    $("svg").addEventListener("click", () => downloadText("zmkmap.svg", svgMarkup(), "image/svg+xml"));
+    $("svg").addEventListener("click", () => downloadText("zmk-next-configurator.svg", svgMarkup(), "image/svg+xml"));
     $("undo").addEventListener("click", () => undoBindings());
     $("redo").addEventListener("click", () => redoBindings());
     $("refresh-kb")?.addEventListener("click", () => {

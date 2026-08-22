@@ -1,5 +1,5 @@
 /**
- * Local-disk scan via the zmkmap serve.py helper (127.0.0.1 only).
+ * Local-disk scan via the zmk-next-configurator serve.py helper (127.0.0.1 only).
  */
 
 export async function listLocalFiles(rootPath) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the zmkmap repo root so /apps/web/ can fetch /src, /layouts, /examples."""
+"""Serve the zmk-next-configurator repo root so /apps/web/ can fetch /src, /layouts, /examples."""
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -143,7 +143,7 @@ def main():
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
     print()
-    print("  ZMK Map is running")
+    print("  ZMK Next Configurator is running")
     print()
     print(f"  →  {url}")
     print()
