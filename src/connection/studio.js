@@ -22,10 +22,12 @@ import {
 } from "./pb.js";
 import { bindingToCells, rememberStudioBehaviors } from "./studio-bind.js";
 import {
+  RUNTIME_CONFIG_ERROR,
   RUNTIME_PROTOCOL_VERSION,
   RuntimeValidationError,
   decodeRuntimeResponse,
   encodeRuntimeSnapshot,
+  runtimeConfigErrorMessage,
 } from "./runtime-config.js";
 
 const SOF = 0xab;
@@ -219,6 +221,7 @@ export class StudioClient {
     this.deviceName = "";
     this.behaviors = [];
     this.layers = [];
+    this.lastRuntimeUpdateId = 0;
     this._loop = this.readLoop();
   }
 
@@ -256,14 +259,19 @@ export class StudioClient {
     this.pending.clear();
   }
 
-  async call(build, timeoutMs = 3000) {
+  async call(build, timeoutMs = 3000, timeoutMessage) {
     const id = this.nextId++;
     const bytes = build(id);
     const framed = frameBytes(bytes);
     const p = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error("Studio RPC timed out. Pick the silent RPC port (often cu.usbmodem104), not the printk console (101). Close zmk.studio / Helium first."));
+        reject(
+          new Error(
+            timeoutMessage ||
+              "Studio RPC timed out. Pick the silent RPC port (often cu.usbmodem104), not the printk console (101). Close zmk.studio / Helium first."
+          )
+        );
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {
@@ -285,11 +293,11 @@ export class StudioClient {
         .map((diagnostic) => diagnostic.message || diagnostic.fieldPath)
         .filter(Boolean)
         .join("; ");
-      throw new Error(
-        `Runtime Config error ${error.code}${error.message ? `: ${error.message}` : ""}${
-          details ? ` (${details})` : ""
-        }`
+      const err = new Error(
+        `${runtimeConfigErrorMessage(error.code, error.message)}${details ? ` (${details})` : ""}`
       );
+      err.runtimeConfigCode = error.code;
+      throw err;
     }
     if (resp.noResponse) throw new Error("Studio sent no_response");
     return resp;
@@ -387,17 +395,78 @@ export class StudioClient {
     return config;
   }
 
-  async applyRuntimeSnapshot(snapshot, { expectedActiveGeneration } = {}) {
+  async abortRuntimeUpdate(updateId = this.lastRuntimeUpdateId) {
+    try {
+      await this.call((id) => encodeRuntime(id, 9, encodeUint32(1, updateId || 0)), 1500);
+    } catch {
+      return false;
+    }
+    if (!updateId || this.lastRuntimeUpdateId === updateId) this.lastRuntimeUpdateId = 0;
+    return true;
+  }
+
+  async abortAnyRuntimeUpdate() {
+    const known = this.lastRuntimeUpdateId;
+    if (known && (await this.abortRuntimeUpdate(known))) return true;
+    // Flashed firmware requires the exact update id; 0 only works after that
+    // firmware change. Scan a small range so a dropped Apply can recover.
+    if (await this.abortRuntimeUpdate(0)) return true;
+    for (let id = 1; id <= 16; id++) {
+      if (id === known) continue;
+      if (await this.abortRuntimeUpdate(id)) return true;
+    }
+    return false;
+  }
+
+  async recoverRuntimeCommit(expectedActiveGeneration = 0) {
+    try {
+      const config = await this.getRuntimeConfig({ timeoutMs: 8000 });
+      const status = config.status || this.runtimeStatus;
+      const generation = Math.max(status?.pendingGeneration || 0, status?.activeGeneration || 0);
+      if (generation > expectedActiveGeneration) {
+        this.lastRuntimeUpdateId = 0;
+        this.runtimeStatus = status;
+        this.runtimeSnapshot = { ...config.snapshot, generation };
+        return {
+          validation: { valid: true },
+          commit: { saved: true, generation, status },
+          recovered: true,
+        };
+      }
+    } catch {
+      // Keyboard may still be writing flash; caller decides whether to wait.
+    }
+    return null;
+  }
+
+  async applyRuntimeSnapshot(snapshot, { expectedActiveGeneration, retried, onProgress } = {}) {
     if (!snapshot || typeof snapshot !== "object") {
       throw new Error("Runtime Config snapshot is required");
     }
+    const progress = (message) => {
+      try {
+        onProgress?.(message);
+      } catch {
+        // Status updates must not fail the save.
+      }
+    };
     const uploadSnapshot = { ...snapshot, generation: 0 };
     const bytes = encodeRuntimeSnapshot(uploadSnapshot);
     const expected =
       expectedActiveGeneration ?? this.runtimeStatus?.activeGeneration ?? snapshot.generation ?? 0;
     let updateId = 0;
+    let commitSent = false;
+    let step = "start";
+    const applyTimeout = (name) =>
+      `Keyboard timed out during ${name}. Keep USB connected. Do not Load from Keyboard yet.`;
+
+    if (!retried && this.lastRuntimeUpdateId) {
+      await this.abortRuntimeUpdate(this.lastRuntimeUpdateId);
+    }
 
     try {
+      step = "begin";
+      progress(`Starting Runtime Config update (${bytes.length} bytes, ${snapshot.keymapOverrides?.length || 0} keys)…`);
       const beginResponse = await this.call(
         (id) =>
           encodeRuntime(
@@ -408,16 +477,23 @@ export class StudioClient {
               encodeUint32(2, bytes.length),
             ])
           ),
-        10000
+        20000,
+        applyTimeout("begin")
       );
       const begin = beginResponse.runtimeConfig?.begin;
       if (!begin?.updateId || !begin.maxChunkBytes) {
         throw new Error("Keyboard did not accept the Runtime Config update");
       }
       updateId = begin.updateId;
+      this.lastRuntimeUpdateId = updateId;
+      // Stock Studio UART RX ring is 30 bytes. A 48-byte snapshot in one
+      // chunk overruns it, so USB drops the frame and upload times out.
+      const maxChunk = Math.max(1, Math.min(begin.maxChunkBytes || 8, 8));
 
       for (let offset = 0; offset < bytes.length; ) {
-        const chunk = bytes.slice(offset, offset + begin.maxChunkBytes);
+        step = "upload";
+        progress(`Uploading Runtime Config… ${offset}/${bytes.length} bytes`);
+        const chunk = bytes.slice(offset, offset + maxChunk);
         const chunkResponse = await this.call(
           (id) =>
             encodeRuntime(
@@ -429,7 +505,8 @@ export class StudioClient {
                 encodeBytes(3, chunk),
               ])
             ),
-          10000
+          15000,
+          applyTimeout("upload")
         );
         const accepted = chunkResponse.runtimeConfig?.chunk;
         if (!accepted || accepted.acceptedBytes !== chunk.length || accepted.nextOffset !== offset + chunk.length) {
@@ -438,9 +515,12 @@ export class StudioClient {
         offset = accepted.nextOffset;
       }
 
+      step = "validate";
+      progress("Validating Runtime Config snapshot…");
       const validationResponse = await this.call(
         (id) => encodeRuntime(id, 7, encodeUint32(1, updateId)),
-        10000
+        30000,
+        applyTimeout("validate")
       );
       const validation = validationResponse.runtimeConfig?.validation;
       if (!validation?.valid) {
@@ -453,22 +533,47 @@ export class StudioClient {
         );
       }
 
+      step = "save";
+      progress("Saving Runtime Config to keyboard flash. Keep USB connected…");
+      commitSent = true;
       const commitResponse = await this.call(
         (id) => encodeRuntime(id, 8, encodeUint32(1, updateId)),
-        10000
+        60000,
+        applyTimeout("save")
       );
       const commit = commitResponse.runtimeConfig?.commit;
       if (!commit?.saved) throw new Error("Keyboard did not save the Runtime Config update");
       this.runtimeStatus = commit.status || this.runtimeStatus;
       this.runtimeSnapshot = { ...uploadSnapshot, generation: commit.generation };
+      this.lastRuntimeUpdateId = 0;
       return { validation, commit };
     } catch (error) {
-      if (updateId) {
-        try {
-          await this.call((id) => encodeRuntime(id, 9, encodeUint32(1, updateId)), 10000);
-        } catch {
-          // The primary request failure is more useful; a retry can recover the staged update.
-        }
+      const timedOut = /did not finish this Runtime Config step|timed out/i.test(error?.message || "");
+      if (timedOut) {
+        progress("Save timed out; checking whether the keyboard finished writing…");
+        const recovered = await this.recoverRuntimeCommit(expected);
+        if (recovered) return recovered;
+      }
+      if (updateId && !commitSent) {
+        await this.abortRuntimeUpdate(updateId);
+      }
+      if (!retried && error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
+        await this.abortAnyRuntimeUpdate();
+        return this.applyRuntimeSnapshot(snapshot, {
+          expectedActiveGeneration,
+          retried: true,
+          onProgress,
+        });
+      }
+      if (error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
+        throw new Error(
+          "A Runtime Config Apply is already in progress. Release all keys if a save is waiting for idle. Otherwise Disconnect, unplug USB to clear the stuck staging, plug back in, then Apply once and wait for “Saved generation”."
+        );
+      }
+      if (timedOut) {
+        throw new Error(
+          `Keyboard timed out during ${step}. Keep USB connected and wait a few seconds. Do not Load from Keyboard. If the overlay is still generation 0, Apply that one key change once more.`
+        );
       }
       throw error;
     }

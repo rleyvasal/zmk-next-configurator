@@ -12,6 +12,7 @@ import {
   encodeBool,
   encodeBytes,
   encodeKey,
+  encodePackedRepeatedUint32,
   encodeRepeatedUint32,
   encodeSub,
   encodeUint32,
@@ -24,6 +25,48 @@ import {
 } from "./pb.js";
 
 export const RUNTIME_PROTOCOL_VERSION = 1;
+
+export const RUNTIME_CONFIG_ERROR = Object.freeze({
+  OK: 0,
+  INVALID_REQUEST: 1,
+  PROTOCOL_VERSION: 2,
+  SNAPSHOT_SCHEMA_VERSION: 3,
+  CAPABILITY_FINGERPRINT: 4,
+  STALE_GENERATION: 5,
+  UPDATE_NOT_FOUND: 6,
+  UPDATE_IN_PROGRESS: 7,
+  UPDATE_INCOMPLETE: 8,
+  INVALID_CHUNK: 9,
+  VALIDATION: 10,
+  RESOURCE_LIMIT: 11,
+  PERSISTENCE: 12,
+  ACTIVATION: 13,
+  NOT_SUPPORTED: 14,
+  INTERNAL: 15,
+});
+
+const RUNTIME_CONFIG_ERROR_TEXT = {
+  1: "invalid request",
+  2: "protocol version mismatch",
+  3: "persistence schema mismatch",
+  4: "firmware capability mismatch",
+  5: "stale generation — Load from Keyboard and Apply again",
+  6: "no matching in-progress update",
+  7: "an Apply is already in progress (a previous save did not finish)",
+  8: "update is incomplete",
+  9: "invalid upload chunk",
+  10: "validation failed",
+  11: "resource limit exceeded",
+  12: "failed to persist the snapshot",
+  13: "cannot activate while keys are held",
+  14: "not supported by this firmware",
+  15: "internal firmware error",
+};
+
+export function runtimeConfigErrorMessage(code, message = "") {
+  const named = RUNTIME_CONFIG_ERROR_TEXT[Number(code)] || `error ${code}`;
+  return `Runtime Config ${named}${message ? `: ${message}` : ""}`;
+}
 
 export const RUNTIME_OBJECT_TYPE = Object.freeze({
   MOD_MORPH: 1,
@@ -289,11 +332,15 @@ function encodeCombo(combo) {
   const positions = array(combo.keyPositions, "combo key positions");
   return concatBytes([
     encodeUint32(1, u32(combo.id, "combo ID")),
-    ...positions.map((position) => encodeRepeatedUint32(2, u32(position, "combo position"))),
+    encodePackedRepeatedUint32(
+      2,
+      positions.map((position) => u32(position, "combo position"))
+    ),
     encodeUint32(3, u32(combo.timeoutMs, "combo timeout")),
     encodeSub(4, encodeAction(combo.output)),
     encodeBool(5, !!combo.slowRelease),
     encodeUint32(6, u32(combo.requirePriorIdleMs ?? 0, "combo prior idle")),
+    encodeUint32(7, u32(combo.layerMask ?? 0, "combo layer mask")),
   ]);
 }
 
@@ -307,6 +354,7 @@ function decodeCombo(fields) {
     output: decodeAction(output),
     slowRelease: !!fieldU32(fields, 5),
     requirePriorIdleMs: fieldU32(fields, 6),
+    layerMask: fieldU32(fields, 7),
   };
 }
 

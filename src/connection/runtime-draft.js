@@ -195,6 +195,44 @@ export function selectedIndexesToStock(capabilities, selectedIndexes) {
   });
 }
 
+export function comboLayerMask(layers) {
+  if (layers == null || layers === "all" || layers === "") return 0;
+  const list = Array.isArray(layers)
+    ? layers
+    : String(layers)
+        .trim()
+        .split(/[,\s]+/)
+        .filter(Boolean)
+        .map(Number);
+  let mask = 0;
+  for (const layer of list) {
+    const n = Number(layer);
+    if (!Number.isInteger(n) || n < 0 || n > 31) {
+      throw new RuntimeDraftError("Combo layers must be 0–31 or blank for every layer");
+    }
+    mask |= 1 << n;
+  }
+  return mask >>> 0;
+}
+
+export function comboLayersFromMask(mask) {
+  const value = Number(mask) >>> 0;
+  if (!value) return "all";
+  const layers = [];
+  for (let i = 0; i < 32; i++) {
+    if (value & (1 << i)) layers.push(i);
+  }
+  return layers;
+}
+
+export function runtimeComboActiveOnLayer(combo, layerIndex) {
+  const mask = Number(combo?.layerMask) >>> 0;
+  if (!mask) return true;
+  const layer = Number(layerIndex);
+  if (!Number.isInteger(layer) || layer < 0 || layer > 31) return false;
+  return (mask & (1 << layer)) !== 0;
+}
+
 export function stockPositionsToSelectedIndexes(capabilities, stockPositionsList) {
   return (stockPositionsList || [])
     .map((position) => stockToSelectedIndex(capabilities, position))
@@ -564,6 +602,7 @@ function normalizeRuntimeCombo(combo, { behaviors, studioLayers, snapshot, capab
     output,
     slowRelease: !!combo.slowRelease,
     requirePriorIdleMs: Number(combo.requirePriorIdleMs) || 0,
+    layerMask: comboLayerMask(combo.layers ?? comboLayersFromMask(combo.layerMask)),
   };
 }
 
@@ -573,6 +612,20 @@ export function isStockCompiledBindingReason(reason) {
   return /no Studio parameter metadata|is not in this firmware|cannot be applied live|not live-editable|download and flash/i.test(
     text
   );
+}
+
+function normalizeBindingText(text) {
+  return String(text || "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+export function bindingsMatchForOverlay(editorText, compiledText) {
+  const editor = normalizeBindingText(editorText);
+  const compiled = normalizeBindingText(compiledText);
+  if (editor === compiled) return true;
+  const empty = (value) => !value || value === "&none" || value === "&trans";
+  return empty(editor) && empty(compiled);
 }
 
 /**
@@ -592,6 +645,7 @@ export function replaceDraftKeymapOverrides({
   deviceLayerIds,
   behaviors,
   studioLayers,
+  compiledBindingTexts,
 }) {
   const draft = createRuntimeDraft(snapshot);
   const layers = Array.isArray(editorLayers) ? editorLayers : [];
@@ -617,6 +671,10 @@ export function replaceDraftKeymapOverrides({
     }
     for (let position = 0; position < keyCount; position++) {
       const text = layers[layerIndex].bindings[position]?.text || "";
+      const compiledText = compiledBindingTexts?.[layerIndex]?.[position];
+      if (compiledText != null && bindingsMatchForOverlay(text, compiledText)) {
+        continue;
+      }
       try {
         overrides.push({
           layerId,

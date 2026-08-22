@@ -255,6 +255,24 @@ export function classifyCombination(draft = {}) {
       binding: outputs[0] ? asBinding(outputs[0].binding) : "",
     };
   }
+  if (triggers.length >= 2 && triggers.every((tr) => tr.mode === "hold")) {
+    const setKeys = (draft.setKeys || []).length
+      ? draft.setKeys
+      : triggers.map((tr) => ({
+          index: tr.index,
+          hold: resolveHoldMod(tr) || draft.holdChoice?.mod || "",
+          tap: tr.tap || tapTokenFromBinding(tr.binding) || "",
+        }));
+    if (draft.hrmMode === "set" || draft.holdChoice?.kind === "modifier" || !outputs.length) {
+      return {
+        kind: "hold-tap-set",
+        hold: setKeys[0]?.hold || draft.holdChoice?.mod,
+        tap: setKeys[0]?.tap,
+        index: setKeys[0]?.index,
+        setKeys,
+      };
+    }
+  }
   if (triggers.length >= 2 && triggers.every((tr) => tr.mode === "tap")) {
     const positions = triggers.map((tr) => tr.index);
     if (!draft.stepsDirty && isSimpleComboOutput(outputs)) {
@@ -297,6 +315,18 @@ export function macroStepsFromKeys(keys = []) {
     if (bind) steps.push({ kind: "release", keys: bind });
   }
   return steps;
+}
+
+export function keymapStepsFromRuntimeSteps(steps = [], bindingText = () => "") {
+  return (steps || []).map((step) => {
+    if (step?.kind) return { kind: step.kind, keys: step.keys || "" };
+    if (step?.type === "wait") return { kind: "wait", keys: String(step.ms ?? 0) };
+    if (step?.type === "pauseUntilRelease") return { kind: "pause", keys: "" };
+    return {
+      kind: step?.type || "tap",
+      keys: bindingText(step?.action) || step?.binding || step?.keys || "",
+    };
+  });
 }
 
 export function outputKeysFromSteps(steps = []) {

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseKeymap } from "../src/keymap/keymap.js";
 import { normalizeProfile } from "../src/layouts/layout.js";
 import { createRuntimeDraft, parseRuntimeObjectId } from "../src/connection/runtime-draft.js";
-import { formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../src/connection/runtime-import.js";
+import { comboLinkedMacroId, formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../src/connection/runtime-import.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const profile = normalizeProfile(JSON.parse(readFileSync(join(root, "layouts/totem.json"), "utf8")));
@@ -65,8 +65,9 @@ const skippedIds = totem.skipped.map((item) => item.id);
 if (!skippedIds.includes("hml") || !skippedIds.includes("hmr")) {
   throw new Error(`homerow should stay compiled ${JSON.stringify(totem.skipped)}`);
 }
-if (!totem.skipped.some((item) => item.id === "combo_esc" && /layer filter/.test(item.reason))) {
-  throw new Error(`layered combo_esc must be skipped ${JSON.stringify(totem.skipped)}`);
+const escCombo = totem.draft.combos.find((combo) => combo.keyPositions.join(",") === "0,1");
+if (!escCombo || escCombo.layerMask !== 1) {
+  throw new Error(`layered combo_esc should import on BASE only ${JSON.stringify(escCombo)}`);
 }
 if (!totem.skipped.some((item) => item.id === "combo_studio_unlock" && /ifdef/.test(item.reason))) {
   throw new Error("guarded studio combo must be skipped");
@@ -183,7 +184,13 @@ if (!kinds.includes("hold-tap:simple_ht LGUI A") || !kinds.includes("hold-tap:na
 }
 if (!kinds.includes("combo:combo_all")) throw new Error("all-layer combo");
 if (imported.skipped.some((item) => item.id === "combo_all")) throw new Error("combo_all should import");
-if (!imported.skipped.some((item) => item.id === "combo_base")) throw new Error("layered combo_base should skip");
+if (!kinds.includes("combo:combo_base")) throw new Error("layered combo_base should import");
+const baseCombo = imported.draft.combos.find((combo) => combo.keyPositions.join(",") === "0,1");
+if (!baseCombo || baseCombo.layerMask !== 1) {
+  throw new Error(`combo_base layer ${JSON.stringify(baseCombo)}`);
+}
+const allCombo = imported.draft.combos.find((combo) => combo.keyPositions.join(",") === "2,3");
+if (!allCombo || allCombo.layerMask) throw new Error(`combo_all should be every layer ${JSON.stringify(allCombo)}`);
 const htRewrites = imported.rewrites.filter((item) => item.from === "&simple_ht LGUI A");
 if (htRewrites.length !== 2 || new Set(htRewrites.map((item) => item.to)).size !== 1) {
   throw new Error(`shared hold-tap instance ${JSON.stringify(htRewrites)}`);
@@ -209,6 +216,46 @@ const gated = importKeymapRuntimeObjects({
 });
 if (gated.imported.length) throw new Error("gated firmware must import nothing");
 if (!gated.skipped.length) throw new Error("gated firmware should report skips");
+
+if (comboLinkedMacroId({ id: "combo_mac_lgui_lctrl_q", binding: "&kp LGUI" }, ["mac_lgui_lctrl_q"]) !== "mac_lgui_lctrl_q") {
+  throw new Error("combo id should link to the matching macro when binding is a key");
+}
+if (comboLinkedMacroId({ id: "combo_esc", binding: "&kp ESC" }, ["mac_lgui_lctrl_q"]) != null) {
+  throw new Error("unrelated combo must not link a lock macro");
+}
+
+const lock = importKeymapRuntimeObjects({
+  snapshot,
+  capabilities,
+  macros: [
+    {
+      id: "mac_lgui_lctrl_q",
+      steps: [
+        { kind: "press", keys: "&kp LGUI" },
+        { kind: "press", keys: "&kp LCTRL" },
+        { kind: "tap", keys: "&kp Q" },
+        { kind: "release", keys: "&kp LCTRL" },
+        { kind: "release", keys: "&kp LGUI" },
+      ],
+    },
+  ],
+  combos: [
+    {
+      id: "combo_mac_lgui_lctrl_q",
+      positions: [2, 3],
+      binding: "&kp LGUI",
+      layers: "all",
+      timeout: 50,
+    },
+  ],
+  ...encode,
+});
+const lockCombo = lock.draft.combos[0];
+const lockObjectId = lockCombo?.output?.runtimeObjectId;
+if (!lockObjectId || !lock.draft.runtimeObjects.some((item) => item.id === lockObjectId && item.type === "macro")) {
+  throw new Error(`lock combo output must be the imported macro ${JSON.stringify(lockCombo)}`);
+}
+if (lockCombo.keyPositions.join(",") !== "2,3") throw new Error(`lock positions ${lockCombo.keyPositions}`);
 
 const summary = formatRuntimeImportSummary(totem);
 if (!summary.includes("mac_lock") || !summary.includes("Skipped:") || !summary.includes("until Apply")) {

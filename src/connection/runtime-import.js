@@ -177,6 +177,14 @@ function importMacro(draft, macro, capabilities, encodeOpts) {
   if (!steps.length) {
     return { skip: { kind: "macro", id: macro.id, reason: "macro has no steps" } };
   }
+  const held = [];
+  for (const step of steps) {
+    if (step.type === "press") held.push(step.binding);
+    if (step.type === "release") held.pop();
+  }
+  while (held.length) {
+    steps.push({ type: "release", binding: held.pop() });
+  }
   try {
     const merged = mergeObject(draft, {
       type: "macro",
@@ -349,6 +357,22 @@ function importTapDance(draft, behavior, capabilities, encodeOpts) {
   }
 }
 
+export function comboLinkedMacroId(combo, macroIds) {
+  const ids =
+    macroIds instanceof Set
+      ? macroIds
+      : new Set(
+          macroIds && typeof macroIds[Symbol.iterator] === "function" ? [...macroIds] : []
+        );
+  const fromBinding = String(combo?.binding || "")
+    .replace(/^&/, "")
+    .split(/\s+/)[0];
+  if (ids.has(fromBinding)) return fromBinding;
+  const fromName = String(combo?.id || "").replace(/^combo_/, "");
+  if (fromName && ids.has(fromName)) return fromName;
+  return null;
+}
+
 function importCombo(draft, combo, capabilities, encodeOpts, fileToRuntime) {
   if (!capabilitySupportsCombos(capabilities)) {
     return { skip: { kind: "combo", id: combo.id, reason: "this firmware does not advertise runtime combos" } };
@@ -356,26 +380,22 @@ function importCombo(draft, combo, capabilities, encodeOpts, fileToRuntime) {
   if (combo.guarded) {
     return { skip: { kind: "combo", id: combo.id, reason: "ifdef-guarded combos stay firmware-compiled" } };
   }
-  if (combo.layers !== "all") {
-    return {
-      skip: {
-        kind: "combo",
-        id: combo.id,
-        reason: "runtime combos have no layer filter; a layered combo would fire on every layer",
-      },
-    };
-  }
   const positions = (combo.positions || []).map(Number).filter((position) => Number.isInteger(position) && position >= 0);
   if (positions.length < 2) {
     return { skip: { kind: "combo", id: combo.id, reason: "a combo needs at least two keys" } };
   }
-  const outputBinding = rewriteImportedBinding(combo.binding, fileToRuntime);
+  const linkedMacro = comboLinkedMacroId(combo, new Set(fileToRuntime.keys()));
+  const outputBinding = rewriteImportedBinding(
+    linkedMacro ? `&${linkedMacro}` : combo.binding,
+    fileToRuntime
+  );
   try {
     const merged = mergeCombo(draft, {
       keyPositions: positions,
       timeoutMs: Number(combo.timeout) || 50,
       slowRelease: !!combo.slowRelease,
       requirePriorIdleMs: 0,
+      layers: combo.layers,
       outputBinding,
     }, capabilities, encodeOpts);
     return {

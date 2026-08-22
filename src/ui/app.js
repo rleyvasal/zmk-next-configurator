@@ -61,6 +61,7 @@ import {
   asBinding,
   isBrokenComboBinding,
   formatBuilderDefinition,
+  keymapStepsFromRuntimeSteps,
 } from "../core/combine.js";
 import {
   History,
@@ -88,6 +89,8 @@ import {
   nextRuntimeObjectId,
   parseRuntimeObjectId,
   replaceDraftKeymapOverrides,
+  actionFromBindingText,
+  bindingsMatchForOverlay,
   runtimeBindingText,
   runtimeIssuesFromDiagnostics,
   runtimeIssuesFromDraftError,
@@ -97,11 +100,14 @@ import {
   runtimeResourceUsage,
   stockToSelectedIndex,
   stockPositionsToSelectedIndexes,
+  runtimeComboActiveOnLayer,
+  comboLayersFromMask,
   supportedRuntimeEditorTypes,
   upsertRuntimeCombo,
   upsertRuntimeObject,
 } from "../connection/runtime-draft.js";
-import { formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../connection/runtime-import.js";
+import { comboLinkedMacroId, formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../connection/runtime-import.js";
+import { extraRuntimeCombinationItems } from "../connection/runtime-display.js";
 import {
   applyRuntimeDocument,
   encodeRuntimeDocument,
@@ -184,10 +190,65 @@ const state = {
   runtimeIssues: [],
   deviceLayerCount: 0,
   flashNotice: null,
+  stockBindingTexts: new Map(),
+  runtimeDirtyKeys: new Map(),
 };
 
 const liveQueue = [];
 let liveBusy = false;
+let runtimeIdleWatch = 0;
+
+function stopRuntimeIdleWatch() {
+  if (runtimeIdleWatch) {
+    clearInterval(runtimeIdleWatch);
+    runtimeIdleWatch = 0;
+  }
+}
+
+function startRuntimeIdleWatch(expectedGeneration) {
+  stopRuntimeIdleWatch();
+  const wanted = Number(expectedGeneration) || 0;
+  if (!wanted) return;
+  const started = Date.now();
+  runtimeIdleWatch = setInterval(async () => {
+    if (!state.studio || !state.runtime) {
+      stopRuntimeIdleWatch();
+      return;
+    }
+    if (Date.now() - started > 60000) {
+      stopRuntimeIdleWatch();
+      setStatus(
+        "Runtime Config is saved on the keyboard. If the sidebar still says waiting for idle, lift all keys or Disconnect and Connect again."
+      );
+      return;
+    }
+    try {
+      const status = await state.studio.getRuntimeConfigStatus({ timeoutMs: 2000 });
+      state.runtime.status = status;
+      const active = Number(status.activeGeneration || 0);
+      const pending = Number(status.pendingGeneration || 0);
+      if (active >= wanted && (!pending || pending === active)) {
+        stopRuntimeIdleWatch();
+        const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
+        if (live?.status) state.runtime.status = live.status;
+        if (live?.snapshot) {
+          state.runtime.snapshot = createRuntimeDraft(live.snapshot);
+          state.runtime.draft = createRuntimeDraft(live.snapshot);
+        }
+        setStudioLabel("Connected · Runtime Config active", "on");
+        paintRuntimeOverlayOnEditor(state.runtime.snapshot);
+        renderKeyboard();
+        renderCombinations();
+        setStatus(`Runtime Config generation ${active} is now active.`);
+        return;
+      }
+      updateRuntimeGenerationLabel();
+      renderRuntimeChrome();
+    } catch {
+      // USB may be briefly busy; keep the saved overlay until the next poll.
+    }
+  }, 1500);
+}
 
 function setStatus(msg) {
   $("status").textContent = msg;
@@ -265,7 +326,7 @@ function updateStudioButtons() {
   const hint = $("live-hint");
   if (hint) {
     hint.innerHTML = state.runtime
-      ? "<strong>Runtime Config</strong> saves one complete snapshot: ordinary keys plus runtime macros, combos, hold-taps, mod-morphs, and tap-dances. Edits stay local until Apply, then activate only when the keyboard is idle."
+      ? "<strong>Combinations</strong> still use trigger keys on the layout and an output from the palette. Advanced is for mod-morphs, tap-dances, and extra timing. Apply saves one snapshot; it activates when the keyboard is idle."
       : "<strong>Live Apply</strong> works for existing bindings only. New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.";
   }
 }
@@ -1205,8 +1266,10 @@ function bindingTint(text, index) {
     state.combos.some(
       (c) => !c.deleted && c.positions.includes(index) && comboActiveOnLayer(c, state.layer)
     ) ||
-    state.runtime?.draft?.combos.some((combo) =>
-      stockPositionsToSelectedIndexes(state.runtime.capabilities, combo.keyPositions).includes(index)
+    state.runtime?.draft?.combos.some(
+      (combo) =>
+        runtimeComboActiveOnLayer(combo, state.layer) &&
+        stockPositionsToSelectedIndexes(state.runtime.capabilities, combo.keyPositions).includes(index)
     )
   ) {
     return "kind-combo";
@@ -1719,12 +1782,35 @@ function onDragUp(ev) {
   else if (ok && plan.kind === "clear") selectOnly(drag.from);
 }
 
+function runtimeDirtyKeyId(layerIndex, index) {
+  return `${layerIndex}:${index}`;
+}
+
+function noteRuntimeDirtyKey(layerIndex, index, text) {
+  if (!state.runtime) return;
+  const mapped = studioLayerIndex(layerIndex);
+  const studioLayer = mapped == null ? null : state.studio?.layers?.[mapped];
+  const stock = studioLayer ? state.stockBindingTexts.get(studioLayer.id)?.[index] : null;
+  const id = runtimeDirtyKeyId(layerIndex, index);
+  if (stock != null && bindingsMatchForOverlay(text, stock)) {
+    state.runtimeDirtyKeys.delete(id);
+    return;
+  }
+  state.runtimeDirtyKeys.set(id, {
+    layerIndex,
+    index,
+    text,
+    layerId: studioLayer?.id,
+  });
+}
+
 function applyBindingField(layerIndex, changes, field, opts = {}) {
   const bindings = state.layers[layerIndex]?.bindings;
   const list = field === "before" ? [...changes].reverse() : changes;
   for (const c of list) {
     if (bindings?.[c.index]) bindings[c.index].text = c[field];
     queueLive(layerIndex, c.index, c[field]);
+    noteRuntimeDirtyKey(layerIndex, c.index, c[field]);
   }
   state.layer = layerIndex;
   setDirty(true);
@@ -1802,12 +1888,31 @@ function comboChipLabel(combo) {
   return combo.positions.map(comboKeyCaption).join(" + ");
 }
 
+function homeRowChipDetail(behavior) {
+  const assigns = collectAssignments(behavior.id, "hold-tap").filter(
+    (a) => !a.removed && a.layer === state.layer
+  );
+  if (!assigns.length) return `Hold-tap ${behavior.tappingTerm || 280}ms`;
+  return assigns
+    .map((a) => {
+      const letter = a.tap || comboKeyCaption(a.index) || `P${a.index}`;
+      const hold = bindingLabel(`&kp ${a.hold}`) || a.hold;
+      return hold ? `${letter} ${hold}` : letter;
+    })
+    .join(" · ");
+}
+
 function renderCombos() {
   renderCombinations();
 }
 
-function combinationEntries() {
-  if (state.runtime) return runtimeCombinationEntries();
+function combinationFilterMatch(item, filter) {
+  if (!filter || filter === "all") return true;
+  if (filter === "hold-tap") return item.type === "hold-tap" || item.type === "holdTap";
+  return item.type === filter;
+}
+
+function keymapCombinationEntries() {
   const draft = state.combinationDraft;
   const draftId = draft?.source?.item?.id;
   const items = [];
@@ -1829,7 +1934,7 @@ function combinationEntries() {
       type: hold ? "hold-tap" : "behavior",
       id: b.id,
       title: `&${b.id}`,
-      detail: hold ? `Hold-tap ${b.tappingTerm || 280}ms` : b.kind || "behavior",
+      detail: hold ? homeRowChipDetail(b) : b.kind || "behavior",
       tint: isHomeRowBehavior(b, inspectContext()) ? "kind-homerow" : hold ? "kind-holdtap" : "kind-other",
       source: b,
     });
@@ -1845,8 +1950,30 @@ function combinationEntries() {
       guarded: c.guarded,
     });
   }
+  return items;
+}
+
+function combinationEntries() {
+  const keymapItems = keymapCombinationEntries();
+  const runtimeItems = state.runtime ? runtimeCombinationEntries() : [];
+  const extras = extraRuntimeCombinationItems(keymapItems, runtimeItems);
+  const items = [...keymapItems, ...extras];
   const filter = state.combinationFilter || "all";
-  return filter === "all" ? items : items.filter((it) => it.type === filter);
+  return items.filter((item) => {
+    if (!combinationFilterMatch(item, filter)) return false;
+    if (item.runtime && item.type === "combo") {
+      return runtimeComboActiveOnLayer(item.source, state.layer);
+    }
+    if (item.runtime && item.type === "macro") {
+      const combos = (state.runtime.draft?.combos || []).filter(
+        (combo) => combo.output?.runtimeObjectId === item.source?.id
+      );
+      if (combos.length && combos.every((combo) => !runtimeComboActiveOnLayer(combo, state.layer))) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 function renderCombinations() {
@@ -1858,9 +1985,7 @@ function renderCombinations() {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "combo-meta";
-    empty.textContent = state.runtime
-      ? "No runtime objects in this draft. New ones stay local until Apply."
-      : "No combinations on this layer.";
+    empty.textContent = "No combinations on this layer. Click + New, then pick trigger keys on the layout and an output from the palette.";
     wrap.appendChild(empty);
     return;
   }
@@ -1887,6 +2012,68 @@ function renderCombinations() {
   }
 }
 
+function runtimeComboForCombinationItem(item) {
+  if (!item?.runtime) return null;
+  if (item.type === "combo") return item.source || null;
+  const objectId = item.source?.id;
+  if (!objectId) return null;
+  return (state.runtime?.draft?.combos || []).find((combo) => combo.output?.runtimeObjectId === objectId) || null;
+}
+
+function runtimeObjectForCombinationItem(item) {
+  if (!item?.runtime) return null;
+  if (item.type === "macro" || item.type === "holdTap") return item.source || null;
+  const objectId = item.source?.output?.runtimeObjectId;
+  return objectId ? findRuntimeObject(state.runtime?.draft, objectId) : null;
+}
+
+function openRuntimeCombinationInBuilder(item) {
+  const combo = runtimeComboForCombinationItem(item);
+  const object =
+    runtimeObjectForCombinationItem(item) ||
+    (combo?.output?.runtimeObjectId ? findRuntimeObject(state.runtime?.draft, combo.output.runtimeObjectId) : null);
+  if (!combo && !object) return false;
+  if (object && object.type !== "macro") return false;
+  const positions = combo
+    ? stockPositionsToSelectedIndexes(state.runtime.capabilities, combo.keyPositions)
+    : [];
+  const steps = keymapStepsFromRuntimeSteps(object?.steps || [], (action) =>
+    bindingTextFromAction(action, runtimeEncodeOpts())
+  );
+  const reversed = outputKeysFromSteps(steps);
+  const guessed = suggestedName(
+    { outputs: reversed.keys, name: "" },
+    { kind: object ? "macro" : "combo", needsCombo: positions.length >= 2 }
+  );
+  const existingCombo =
+    positions.length >= 2
+      ? state.combos.find((entry) => !entry.deleted && (entry.positions || []).join(",") === positions.join(","))
+      : null;
+  if (existingCombo) {
+    openCombinationBuilder({ type: "combo", item: existingCombo });
+    return true;
+  }
+  const existingMacro = guessed ? state.macros.find((entry) => !entry.deleted && entry.id === guessed) : null;
+  const macroItem = existingMacro
+    ? { ...existingMacro, steps }
+    : { id: guessed || `mac_rt_${object?.id || 1}`, steps, added: true, deleted: false };
+  const comboItem = {
+    id: `combo_${macroItem.id}`,
+    positions,
+    binding: `&${macroItem.id}`,
+    timeout: combo?.timeoutMs || state.settings.comboTimeout,
+    layers: comboLayersFromMask(combo?.layerMask),
+    added: true,
+    deleted: false,
+  };
+  openCombinationBuilder({
+    type: object ? "macro" : "combo",
+    item: object ? macroItem : comboItem,
+    combo: object ? comboItem : null,
+  });
+  return true;
+}
+
 function deleteCombinationItem(item) {
   if (item.runtime) {
     deleteRuntimeEditorItem(item);
@@ -1898,6 +2085,11 @@ function deleteCombinationItem(item) {
 }
 
 function openCombinationItem(item) {
+  if (item.runtime && (item.type === "combo" || item.type === "macro")) {
+    if (openRuntimeCombinationInBuilder(item)) return;
+    openRuntimeEditor(item);
+    return;
+  }
   if (item.runtime) {
     openRuntimeEditor(item);
     return;
@@ -1967,6 +2159,9 @@ function openCombinationBuilder(source = null) {
     stepsDirty: false,
     stepIndex: 0,
     tappingTerm: state.settings.tappingTerm,
+    quickTap: 175,
+    priorIdle: 150,
+    flavor: "balanced",
     timeout: state.settings.comboTimeout,
     layers: String(state.layer),
     advanced: false,
@@ -2011,7 +2206,8 @@ function openCombinationBuilder(source = null) {
   } else if (source?.type === "macro" && item) {
     draft.name = item.id;
     const seats = findMacroKeySeats(item.steps, state.layers).filter((s) => s.layer === state.layer);
-    const comboSrc = state.combos.find((c) => !c.deleted && c.binding === `&${item.id}`);
+    const comboSrc =
+      source.combo || state.combos.find((c) => !c.deleted && c.binding === `&${item.id}`);
     if (comboSrc) {
       draft.triggers = comboSrc.positions.map((index) => ({
         index,
@@ -2036,6 +2232,9 @@ function openCombinationBuilder(source = null) {
   } else if (source?.type === "hold-tap" && item) {
     draft.name = item.id;
     draft.tappingTerm = item.tappingTerm || state.settings.tappingTerm;
+    draft.quickTap = item.quickTap ?? 175;
+    draft.priorIdle = item.priorIdle ?? 150;
+    draft.flavor = item.flavor || "balanced";
     const assigns = collectAssignments(item.id, "hold-tap").filter((a) => !a.removed && a.layer === state.layer);
     draft.hrmMode = assigns.length > 1 ? "set" : "single";
     if (assigns[0]) {
@@ -2058,6 +2257,9 @@ function openCombinationBuilder(source = null) {
   $("builder-title").textContent = isNew ? "New combination" : `Edit ${item.id || "combination"}`;
   $("builder-name").value = draft.name;
   $("builder-term").value = String(draft.tappingTerm);
+  if ($("builder-quick")) $("builder-quick").value = String(draft.quickTap ?? 175);
+  if ($("builder-idle")) $("builder-idle").value = String(draft.priorIdle ?? 150);
+  if ($("builder-flavor")) $("builder-flavor").value = draft.flavor || "balanced";
   $("builder-timeout").value = String(draft.timeout);
   $("builder-layers").value = draft.layers;
   $("builder-advanced").checked = !!draft.advanced;
@@ -2098,6 +2300,14 @@ function syncSetKeys() {
 
 function initialBuilderStep(draft) {
   if (!draft.triggers.length) return "trigger";
+  const classified = classifyCombination(draft);
+  if (
+    classified.kind === "hold-tap-set" ||
+    classified.kind === "hold-tap" ||
+    classified.kind === "layer-hold"
+  ) {
+    return "trigger";
+  }
   const oneHold = draft.triggers.length === 1 && draft.triggers[0].mode === "hold";
   if (oneHold && !draft.holdChoice) return "output";
   if (!oneHold && !draft.outputs.length) return "output";
@@ -2194,16 +2404,28 @@ function renderBuilder() {
   const draft = state.combinationDraft;
   if (!draft) return;
   const classified = classifyCombination(draft);
+  const holdish =
+    classified.kind === "hold-tap" ||
+    classified.kind === "hold-tap-set" ||
+    classified.kind === "hold-pick" ||
+    classified.kind === "layer-hold";
+  const setMode = classified.kind === "hold-tap-set";
   const oneHold = draft.triggers.length === 1 && draft.triggers[0].mode === "hold";
   const step = draft.step === "output" ? "output" : "trigger";
   if ($("builder-kind")) $("builder-kind").textContent = builderKindLabel(classified);
-  if ($("builder-output-block")) $("builder-output-block").hidden = oneHold;
-  if ($("builder-hold-output")) $("builder-hold-output").hidden = !oneHold;
-  if ($("builder-hrm-mode")) $("builder-hrm-mode").hidden = !(oneHold && draft.holdChoice?.kind === "modifier");
-  if ($("builder-hrm-set-hint")) $("builder-hrm-set-hint").hidden = classified.kind !== "hold-tap-set";
+  if ($("builder-output-block")) $("builder-output-block").hidden = holdish;
+  if ($("builder-hold-output")) $("builder-hold-output").hidden = !holdish;
+  if ($("builder-hold-cats")) $("builder-hold-cats").hidden = setMode;
+  if ($("builder-hold-choices")) $("builder-hold-choices").hidden = setMode;
+  if ($("builder-hrm-mode")) {
+    $("builder-hrm-mode").hidden = !(holdish && (setMode || draft.holdChoice?.kind === "modifier"));
+  }
+  if ($("builder-hrm-set-hint")) $("builder-hrm-set-hint").hidden = !setMode;
   if ($("builder-summary")) $("builder-summary").textContent = combinationSummary(draft, builderLabel);
-  const triggerHint = "Click keys on the layout";
-  const outputHint = oneHold
+  const triggerHint = setMode
+    ? "Each key: letter on tap, modifier on hold"
+    : "Click keys on the layout";
+  const outputHint = holdish
     ? "Pick a layer, a modifier, or another key"
     : "Click keys in the palette";
   if ($("builder-trigger-hint")) $("builder-trigger-hint").textContent = triggerHint;
@@ -2237,11 +2459,12 @@ function renderBuilder() {
   if (adv) adv.hidden = !$("builder-advanced")?.checked;
   const isCombo = classified.kind === "combo";
   const isMacro = classified.kind === "macro";
-  const holdish = classified.kind === "hold-tap" || classified.kind === "hold-tap-set";
+  const holdTiming = classified.kind === "hold-tap" || classified.kind === "hold-tap-set";
+  if ($("builder-adv-hold")) $("builder-adv-hold").hidden = !holdTiming;
   if ($("builder-adv-combo")) $("builder-adv-combo").hidden = !(isCombo || (isMacro && classified.needsCombo));
   if ($("builder-binding-field")) $("builder-binding-field").hidden = !isCombo;
   if ($("builder-adv-macro")) $("builder-adv-macro").hidden = !isMacro;
-  if ($("builder-term-field")) $("builder-term-field").hidden = !holdish;
+  if ($("builder-term-field")) $("builder-term-field").hidden = !holdTiming;
   if ($("builder-timeout-field")) {
     $("builder-timeout-field").hidden = holdish || classified.kind === "remap" || classified.kind === "layer-hold";
   }
@@ -2301,14 +2524,16 @@ function renderBuilderKeys(id, keys, role, classified) {
   if (!wrap) return;
   wrap.replaceChildren();
   const setMode = classified?.kind === "hold-tap-set";
+  const holdTap = classified?.kind === "hold-tap";
   keys.forEach((key, i) => {
     const card = document.createElement("div");
     card.className = "builder-key";
+    if (role === "trigger" && (setMode || holdTap)) card.classList.add("builder-key-hrm");
     const top = document.createElement("div");
     top.className = "bk-top";
     const lab = document.createElement("span");
     lab.className = "bk-label";
-    lab.textContent = builderLabel(key) || `P${key.index ?? i}`;
+    lab.textContent = key.tap || builderLabel(key) || `P${key.index ?? i}`;
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "bk-x";
@@ -2356,7 +2581,30 @@ function renderBuilderKeys(id, keys, role, classified) {
       });
       card.appendChild(mode);
     }
-    if (role === "trigger" && (setMode || (key.mode === "hold" && classified?.kind === "hold-tap"))) {
+    if (role === "trigger" && (setMode || (key.mode === "hold" && holdTap))) {
+      const tapRow = document.createElement("label");
+      tapRow.className = "bk-row";
+      const tapName = document.createElement("span");
+      tapName.className = "bk-k";
+      tapName.textContent = "Tap";
+      const tap = document.createElement("input");
+      tap.type = "text";
+      tap.className = "bk-tap";
+      tap.setAttribute("aria-label", "Tap letter");
+      tap.value = key.tap || "";
+      tap.placeholder = "letter";
+      tap.addEventListener("change", () => {
+        key.tap = tap.value.trim();
+        syncSetKeys();
+        renderBuilder();
+      });
+      tapRow.append(tapName, tap);
+      card.appendChild(tapRow);
+      const holdRow = document.createElement("label");
+      holdRow.className = "bk-row";
+      const holdName = document.createElement("span");
+      holdName.className = "bk-k";
+      holdName.textContent = "Hold";
       const hold = document.createElement("select");
       hold.setAttribute("aria-label", "Hold modifier");
       for (const [hid, label] of holdMods()) {
@@ -2374,7 +2622,12 @@ function renderBuilderKeys(id, keys, role, classified) {
         syncSetKeys();
         renderBuilder();
       });
-      card.appendChild(hold);
+      holdRow.append(holdName, hold);
+      card.appendChild(holdRow);
+      const fn = document.createElement("div");
+      fn.className = "bk-fn";
+      fn.textContent = setMode ? "Home-row" : "Hold-tap";
+      card.appendChild(fn);
     }
     wrap.appendChild(card);
   });
@@ -2508,16 +2761,26 @@ function findHomeRowBehavior(hand) {
   );
 }
 
+function builderHoldTiming(draft) {
+  return {
+    tappingTerm: Number($("builder-term")?.value) || draft.tappingTerm || state.settings.tappingTerm,
+    quickTap: Number($("builder-quick")?.value) || draft.quickTap || 0,
+    priorIdle: Number($("builder-idle")?.value) || draft.priorIdle || 0,
+    flavor: $("builder-flavor")?.value || draft.flavor || "balanced",
+  };
+}
+
 function saveHoldTapFromBuilder(draft, classified, id) {
+  const timing = builderHoldTiming(draft);
   const fields = {
     id,
     name: id,
     kind: "hold-tap",
     compatible: "zmk,behavior-hold-tap",
-    tappingTerm: Number($("builder-term").value) || draft.tappingTerm || state.settings.tappingTerm,
-    quickTap: 175,
-    priorIdle: 150,
-    flavor: "balanced",
+    tappingTerm: timing.tappingTerm,
+    quickTap: timing.quickTap,
+    priorIdle: timing.priorIdle,
+    flavor: timing.flavor,
     bindings: "<&kp>, <&kp>",
     bindingList: ["&kp", "&kp"],
     mods: [],
@@ -2572,15 +2835,21 @@ function saveHoldTapSetFromBuilder(draft, classified, used) {
       : null) || findHomeRowBehavior(hand);
   const prefer = existing?.id || (hand === "right" ? "hmr" : "hml");
   const id = existing && !existing.deleted ? existing.id : uniqueSlug(prefer, used);
+  const timing = builderHoldTiming({
+    tappingTerm: draft.tappingTerm || existing?.tappingTerm,
+    quickTap: draft.quickTap ?? existing?.quickTap,
+    priorIdle: draft.priorIdle ?? existing?.priorIdle,
+    flavor: draft.flavor || existing?.flavor,
+  });
   const fields = {
     id,
     name: existing?.name || id,
     kind: "hold-tap",
     compatible: "zmk,behavior-hold-tap",
-    tappingTerm: Number($("builder-term").value) || draft.tappingTerm || state.settings.tappingTerm,
-    quickTap: existing?.quickTap ?? 175,
-    priorIdle: existing?.priorIdle ?? 150,
-    flavor: existing?.flavor || "balanced",
+    tappingTerm: timing.tappingTerm,
+    quickTap: timing.quickTap,
+    priorIdle: timing.priorIdle,
+    flavor: timing.flavor,
     bindings: "<&kp>, <&kp>",
     bindingList: ["&kp", "&kp"],
     mods: [],
@@ -2614,6 +2883,50 @@ function saveHoldTapSetFromBuilder(draft, classified, used) {
   }
   applyBehaviorAssignments(id, assigns);
   return id;
+}
+
+function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [] } = {}) {
+  if (!state.runtime) return { ok: false };
+  const hasItems = macros.length || combos.length || behaviors.length;
+  if (!hasItems) return { ok: false };
+  try {
+    const result = importKeymapRuntimeObjects({
+      snapshot: state.runtime.draft,
+      capabilities: state.runtime.capabilities,
+      layers: state.layers,
+      macros,
+      combos,
+      behaviors,
+      studioBehaviors: state.studio?.behaviors,
+      studioLayers: studioEncodeLayers(),
+    });
+    state.runtime.draft = result.draft;
+    renderCombinations();
+    return {
+      ok: result.imported.length > 0,
+      imported: result.imported,
+      skipped: result.skipped,
+    };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function announceSavedCombination(kind, item, { created } = {}) {
+  const runtime = pushSavedCombinationToRuntime({
+    macros: kind === "macro" && item ? [item] : [],
+    combos: kind === "combo" && item ? [item] : [],
+    behaviors: (kind === "hold-tap" || kind === "behavior") && item ? [item] : [],
+  });
+  if (runtime.ok) {
+    setStatus(`${item.id || kind} is in the Runtime Config draft. Apply to save it on the keyboard.`);
+    return true;
+  }
+  if (kind === "combo") showFlashNeeded("combo", item?.id, { created });
+  else if (kind === "macro") showFlashNeeded("macro", item?.id, { created });
+  else if (kind === "hold-tap" || kind === "behavior") showFlashNeeded("behavior", item?.id, { created });
+  else showFlashNeeded("params", item?.id || kind, { created: false });
+  return false;
 }
 
 function saveCombinationBuilder() {
@@ -2687,7 +3000,7 @@ function saveCombinationBuilder() {
     closeCombinationBuilder();
     renderPalette();
     const beh = state.behaviors.find((b) => !b.deleted && b.id === saved);
-    showFlashNeeded("behavior", saved, { created: !!beh?.added });
+    announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
     return;
   }
 
@@ -2701,7 +3014,7 @@ function saveCombinationBuilder() {
     closeCombinationBuilder();
     renderPalette();
     const beh = state.behaviors.find((b) => !b.deleted && b.id === id);
-    showFlashNeeded("behavior", id, { created: !!beh?.added });
+    announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
     return;
   }
 
@@ -2715,14 +3028,24 @@ function saveCombinationBuilder() {
       return;
     }
     if (draft.source && draft.source.type !== "combo") dropCombinationSource(draft.source);
+    const linkedMacro = comboLinkedMacroId(
+      { id, binding: classified.output },
+      state.macros.filter((item) => !item.deleted).map((item) => item.id)
+    );
     saveComboRecord(
-      { id, positions: classified.positions, binding: classified.output, layers, timeout },
+      {
+        id,
+        positions: classified.positions,
+        binding: linkedMacro ? `&${linkedMacro}` : classified.output,
+        layers,
+        timeout,
+      },
       draft.source?.type === "combo" ? draft.source.item : null
     );
     setDirty(true);
     closeCombinationBuilder();
     const saved = state.combos.find((c) => !c.deleted && c.id === id);
-    showFlashNeeded("combo", id, { created: !!saved?.added });
+    announceSavedCombination("combo", saved, { created: !!saved?.added });
     return;
   }
 
@@ -2759,6 +3082,16 @@ function saveCombinationBuilder() {
   renderPalette();
   const mac = state.macros.find((m) => !m.deleted && m.id === id);
   const comboWrap = state.combos.find((c) => !c.deleted && c.binding === `&${id}`);
+  if (state.runtime && (mac || comboWrap)) {
+    const runtime = pushSavedCombinationToRuntime({
+      macros: mac ? [mac] : [],
+      combos: comboWrap ? [comboWrap] : [],
+    });
+    if (runtime.ok) {
+      setStatus(`${id} is in the Runtime Config draft. Apply to save it on the keyboard.`);
+      return;
+    }
+  }
   if (mac?.added) showFlashNeeded("macro", id);
   else if (comboWrap?.added) showFlashNeeded("combo", comboWrap.id);
   else showFlashNeeded("params", `&${id}`, { created: false });
@@ -3568,6 +3901,44 @@ function bindingsDifferFromFile() {
   return false;
 }
 
+function restoreCompiledCombinationsFromKeymapFile() {
+  if (!state.original || !keyCount()) return false;
+  try {
+    const parsed = parseKeymap(state.original, keyCount());
+    state.combos = parsed.combos || [];
+    state.comboInsertAt = parsed.comboInsertAt ?? state.comboInsertAt;
+    state.behaviors = parsed.behaviors || [];
+    state.behaviorInsertAt = parsed.behaviorInsertAt ?? state.behaviorInsertAt;
+    state.macros = parsed.macros || [];
+    state.macroInsertAt = parsed.macroInsertAt ?? state.macroInsertAt;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function refreshRuntimeFromDevice() {
+  if (!state.studio) return null;
+  const runtime = await probeRuntimeConfig(state.studio);
+  state.runtime = runtime;
+  updateStudioButtons();
+  renderCombinations();
+  return runtime;
+}
+
+function keyboardLoadStatus(loaded) {
+  const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
+  if (!loaded.ok) return loaded.reason;
+  const overlay = state.runtime ? ` Runtime Config ${runtimeOverlaySummary()}.` : "";
+  const combos = loaded.restoredCombinations
+    ? " Combinations are the compiled keymap plus the overlay on the board."
+    : "";
+  if (loaded.emptyDevice) {
+    return `Showing the keyboard (${loaded.layers} layers). Some cells decoded empty. ${loaded.sample || ""}${dropped}${overlay}${combos}`;
+  }
+  return `Showing the keyboard: ${loaded.layers} layer(s).${dropped}${overlay}${combos}`;
+}
+
 async function refreshFromKeyboard() {
   if (!state.studio) {
     setStatus("Connect the left half first.");
@@ -3580,15 +3951,10 @@ async function refreshFromKeyboard() {
     return;
   }
   await state.studio.getKeymap();
+  await refreshRuntimeFromDevice();
   const loaded = loadEditorFromKeyboard(state.studio, { replace: true });
-  const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
-  setStatus(
-    !loaded.ok
-      ? loaded.reason
-      : loaded.emptyDevice
-        ? `Showing the keyboard (${loaded.layers} layers). Some cells decoded empty. ${loaded.sample || ""}${dropped}`
-        : `Showing the keyboard: ${loaded.layers} layer(s).${dropped}`
-  );
+  renderCombinations();
+  setStatus(keyboardLoadStatus(loaded));
 }
 
 function looksLikeZeroKey(text) {
@@ -3684,6 +4050,10 @@ function loadEditorFromKeyboard(client, opts = {}) {
     }
   }
 
+  rememberStockBindings(client);
+  state.runtimeDirtyKeys = new Map();
+  const restoredCombinations = replace && restoreCompiledCombinationsFromKeymapFile();
+  paintRuntimeOverlayOnEditor(state.runtime?.snapshot);
   state.source = "keyboard";
   const vsFile = bindingsDifferFromFile();
   state.dirty = replace ? false : vsFile || extraEditorLayers().length > 0;
@@ -3704,6 +4074,7 @@ function loadEditorFromKeyboard(client, opts = {}) {
     dropped,
     emptyDevice: !!(slots && skipped / slots > 0.4),
     sample: sample.join(" · "),
+    restoredCombinations,
   };
 }
 
@@ -3909,6 +4280,7 @@ async function probeRuntimeConfig(client) {
 async function connectOrDisconnect() {
   if (state.studio) {
     await state.studio.close();
+    stopRuntimeIdleWatch();
     state.studio = null;
     state.runtime = null;
     state.runtimeIssues = [];
@@ -3928,6 +4300,8 @@ async function connectOrDisconnect() {
     const client = await connectStudio();
     state.studio = client;
     rememberDeviceLayers(client);
+    rememberStockBindings(client);
+    state.runtimeDirtyKeys = new Map();
     state.runtime = await probeRuntimeConfig(client);
     $("kb-name").textContent = client.deviceName || state.profile?.name || "Keyboard";
     setStudioLabel(state.runtime ? "Connected · Runtime Config ready" : "Connected", "on");
@@ -3938,7 +4312,7 @@ async function connectOrDisconnect() {
       updateChrome();
       setStatus(
         `Connected to ${client.deviceName}. Still ${sourceStatusText()}. Apply to push this keymap, or Load from Keyboard to read the board.` +
-          (state.runtime ? " Runtime Config is available." : "")
+          (state.runtime ? ` Runtime Config ${runtimeOverlaySummary()}.` : "")
       );
       return;
     }
@@ -3957,14 +4331,8 @@ async function connectOrDisconnect() {
       setStatus(`Connected, but keyboard decode failed: ${loaded.reason}`);
       return;
     }
-    const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
-    if (loaded.emptyDevice) {
-      setStatus(
-        `Showing the keyboard (${loaded.layers} layers). Some cells decoded empty. ${loaded.sample || ""}${dropped}`
-      );
-    } else {
-      setStatus(`Showing the keyboard: ${loaded.layers} layer(s).${dropped}`);
-    }
+    renderCombinations();
+    setStatus(keyboardLoadStatus(loaded));
   } catch (err) {
     if (err?.name === "NotFoundError") {
       setStudioLabel("Not connected");
@@ -3993,8 +4361,112 @@ function runtimeEditorLayers() {
   return { editorLayers, deviceLayerIds, skipped };
 }
 
+function rememberStockBindings(client = state.studio) {
+  const layers = client?.layers || [];
+  const named = layers.map((layer, index) => ({
+    id: layer.id,
+    name: displayLayerName(studioLayerId(layer, index)),
+  }));
+  const map = new Map();
+  for (const layer of layers) {
+    map.set(
+      layer.id,
+      decodeStudioLayerBindings(layer, client.behaviors, named).bindings.map((binding) => binding.text)
+    );
+  }
+  state.stockBindingTexts = map;
+}
+
+function compiledBindingTextsForDeviceLayers(deviceLayerIds) {
+  return deviceLayerIds.map((layerId) => state.stockBindingTexts?.get?.(layerId) || []);
+}
+
+function paintRuntimeOverlayOnEditor(snapshot) {
+  const caps = state.runtime?.capabilities;
+  if (!snapshot?.keymapOverrides?.length || !caps || !state.studio?.layers?.length) return 0;
+  const opts = runtimeEncodeOpts();
+  let painted = 0;
+  for (const override of snapshot.keymapOverrides) {
+    const selected = stockToSelectedIndex(caps, override.keyPosition);
+    if (selected < 0) continue;
+    const studioIndex = (state.studio.layers || []).findIndex((layer) => layer.id === override.layerId);
+    if (studioIndex < 0) continue;
+    const editorIndex = state.layers.findIndex((_, index) => studioLayerIndex(index) === studioIndex);
+    if (editorIndex < 0) continue;
+    const text = bindingTextFromAction(override.action, opts);
+    const binding = state.layers[editorIndex]?.bindings?.[selected];
+    if (!text || !binding) continue;
+    binding.text = text;
+    painted++;
+  }
+  return painted;
+}
+
+function isUnsafeLiveComboBinding(text) {
+  return /host_log_dump|sys_reset|bootloader|studio_unlock|&studio\b|&rst\b|&reset\b/i.test(
+    String(text || "")
+  );
+}
+
+function liveComboImports() {
+  const macros = state.macros.filter((item) => !item.deleted);
+  const byId = new Map(macros.map((item) => [item.id, item]));
+  const used = new Set();
+  const combos = [];
+  for (const item of state.combos) {
+    if (item.deleted || item.guarded || isUnsafeLiveComboBinding(item.binding)) continue;
+    const macroId = comboLinkedMacroId(item, byId.keys());
+    if (macroId) {
+      used.add(macroId);
+      combos.push({
+        ...item,
+        binding: `&${macroId}`,
+        timeout: Number(item.timeout) > 0 ? item.timeout : 50,
+      });
+      continue;
+    }
+    if (item.added || item.edited) {
+      combos.push({
+        ...item,
+        timeout: Number(item.timeout) > 0 ? item.timeout : 50,
+      });
+    }
+  }
+  return {
+    macros: macros.filter((item) => used.has(item.id)),
+    combos,
+  };
+}
+
+function overlayFromDirtyKeys(snapshot) {
+  const draft = createRuntimeDraft(snapshot);
+  const caps = state.runtime?.capabilities;
+  const positions = caps?.selectedToStockPositions || [];
+  const byKey = new Map(
+    (draft.keymapOverrides || []).map((override) => [`${override.layerId}:${override.keyPosition}`, override])
+  );
+  for (const dirty of state.runtimeDirtyKeys.values()) {
+    if (dirty.layerId == null || dirty.index == null) continue;
+    const keyPosition = Number(positions[dirty.index]);
+    if (!Number.isInteger(keyPosition) || keyPosition < 0) continue;
+    byKey.set(`${dirty.layerId}:${keyPosition}`, {
+      layerId: dirty.layerId,
+      keyPosition,
+      action: actionFromBindingText(dirty.text, {
+        behaviors: state.studio.behaviors,
+        studioLayers: studioEncodeLayers(),
+        allowRuntimeObject: true,
+        snapshot: draft,
+      }),
+    });
+  }
+  draft.keymapOverrides = [...byKey.values()];
+  return draft;
+}
+
 async function applyRuntimeAll() {
   if (!state.studio || !state.runtime) return;
+  if (!state.stockBindingTexts.size) rememberStockBindings();
   const { editorLayers, deviceLayerIds, skipped } = runtimeEditorLayers();
   if (!editorLayers.length) {
     setStatus("No editor layers are present in this firmware. Download the keymap and flash to add them.");
@@ -4003,14 +4475,52 @@ async function applyRuntimeAll() {
 
   let draft;
   try {
-    draft = replaceDraftKeymapOverrides({
-      snapshot: state.runtime.draft || state.runtime.snapshot,
-      capabilities: state.runtime.capabilities,
-      editorLayers,
-      deviceLayerIds,
-      behaviors: state.studio.behaviors,
-      studioLayers: studioEncodeLayers(),
-    });
+    draft = overlayFromDirtyKeys(state.runtime.snapshot);
+    draft.runtimeObjects = [];
+    draft.combos = [];
+    const live = liveComboImports();
+    if (live.macros.length || live.combos.length) {
+      const imported = importKeymapRuntimeObjects({
+        snapshot: draft,
+        capabilities: state.runtime.capabilities,
+        macros: live.macros,
+        combos: live.combos,
+        behaviors: [],
+        studioBehaviors: state.studio.behaviors,
+        studioLayers: studioEncodeLayers(),
+      });
+      if (imported.skipped.length && !imported.imported.length) {
+        throw new RuntimeDraftError(
+          imported.skipped.map((item) => `${item.kind} ${item.id}: ${item.reason}`).join("; "),
+          imported.skipped
+        );
+      }
+      draft = imported.draft;
+    }
+    const local = state.runtime.draft;
+    for (const object of local?.runtimeObjects || []) {
+      if (!draft.runtimeObjects.some((item) => item.id === object.id)) {
+        draft.runtimeObjects.push(object);
+      }
+    }
+    for (const combo of local?.combos || []) {
+      const objectId = combo.output?.runtimeObjectId;
+      if (objectId && !findRuntimeObject(draft, objectId)) continue;
+      const key = (combo.keyPositions || []).join(",");
+      if (key && draft.combos.some((item) => (item.keyPositions || []).join(",") === key)) continue;
+      draft.combos.push(combo);
+    }
+    for (const combo of draft.combos) {
+      const objectId = combo.output?.runtimeObjectId;
+      if (objectId && !findRuntimeObject(draft, objectId)) {
+        throw new RuntimeDraftError(`Combo ${combo.id} output runtime object ${objectId} is not in this snapshot`);
+      }
+      if (!combo.output?.runtimeObjectId && !combo.output?.compiledBehavior) {
+        throw new RuntimeDraftError(`Combo ${combo.id} has no output action`);
+      }
+    }
+    encodeRuntimeSnapshot({ ...draft, generation: 0 });
+    state.runtime.draft = createRuntimeDraft(draft);
   } catch (error) {
     if (error instanceof RuntimeDraftError) {
       const first = error.issues?.[0];
@@ -4023,8 +4533,14 @@ async function applyRuntimeAll() {
     throw error;
   }
   const skippedBindings = draft.skippedBindings || [];
-  if (skippedBindings[0]?.text) {
-    showFlashNeededForBinding(skippedBindings[0].text, skippedBindings[0].reason);
+  if (!draft.keymapOverrides.length && !draft.runtimeObjects.length && !draft.combos.length) {
+    setStatus(
+      state.dirty
+        ? "That edit did not produce a Runtime Config overlay (it still matches the compiled keymap, or it cannot be encoded live). Change a normal key, then Apply immediately — do not Load from Keyboard first."
+        : "Nothing to save: every key already matches the compiled keymap. Click a key, assign a different letter from the palette, then Apply. Do not Load from Keyboard until after you see generation 1."
+    );
+    renderCombinations();
+    return;
   }
 
   const usage = runtimeResourceUsage(draft);
@@ -4052,12 +4568,13 @@ async function applyRuntimeAll() {
   }
 
   state.runtimeIssues = [];
-  setStatus("Validating and saving Runtime Config snapshot…");
+  setStatus(`Saving Runtime Config (${draft.keymapOverrides.length} key overlay(s))…`);
   let validation;
   let commit;
   try {
     ({ validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
-      expectedActiveGeneration: state.runtime.snapshot.generation,
+      expectedActiveGeneration: state.runtime.status?.activeGeneration ?? 0,
+      onProgress: setStatus,
     }));
   } catch (error) {
     if (error instanceof RuntimeValidationError) {
@@ -4076,11 +4593,41 @@ async function applyRuntimeAll() {
     draft: createRuntimeDraft(nextSnapshot),
     status: commit.status || state.studio.runtimeStatus,
   };
+  try {
+    const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
+    if (live?.status) state.runtime.status = live.status;
+    const liveGen = Math.max(
+      Number(live?.status?.pendingGeneration) || 0,
+      Number(live?.status?.activeGeneration) || 0,
+      Number(live?.snapshot?.generation) || 0
+    );
+    if (
+      live?.snapshot &&
+      (live.status?.activeGeneration || 0) >= commit.generation &&
+      (live.status?.activeGeneration || 0) > 0
+    ) {
+      state.runtime.snapshot = createRuntimeDraft(live.snapshot);
+      state.runtime.draft = createRuntimeDraft(live.snapshot);
+    }
+    if (!liveGen) {
+      setStudioLabel("Connected · Runtime Config ready", "on");
+      renderCombinations();
+      setStatus(
+        "Apply returned, but the keyboard still reports generation 0. The overlay did not stay. Keep USB connected, change one key, and Apply once more."
+      );
+      return;
+    }
+  } catch {
+    // Keep the commit result if readback fails; USB may still be writing.
+  }
+  state.runtimeDirtyKeys = new Map();
   const pending = state.runtime.status?.pendingGeneration === commit.generation;
   setStudioLabel(
     pending ? "Connected · config saved, waiting for idle" : "Connected · Runtime Config active",
     "on"
   );
+  if (pending) startRuntimeIdleWatch(commit.generation);
+  else stopRuntimeIdleWatch();
   updateStudioButtons();
   renderKeyboard();
   renderInspect();
@@ -4151,6 +4698,8 @@ async function restoreRuntimeStock() {
     pending ? "Connected · stock saved, waiting for idle" : "Connected · stock configuration active",
     "on"
   );
+  if (pending) startRuntimeIdleWatch(reset.generation);
+  else stopRuntimeIdleWatch();
   updateStudioButtons();
   renderCombinations();
   setStatus(
@@ -4196,14 +4745,14 @@ function runtimeCombinationEntries() {
       runtime: true,
       type: "combo",
       id: combo.id,
+      positions: selected,
       title: selected.map((index) => comboKeyCaption(index)).join(" + ") || `Combo ${combo.id}`,
       detail: prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
       tint: "kind-combo",
       source: combo,
     });
   }
-  const filter = state.combinationFilter || "all";
-  return filter === "all" ? items : items.filter((item) => item.type === filter);
+  return items;
 }
 
 function runtimeObjectDetail(object) {
@@ -4214,22 +4763,62 @@ function runtimeObjectDetail(object) {
   return object.type;
 }
 
+function runtimeOverlaySummary() {
+  if (!state.runtime) return "";
+  const status = state.runtime.status || {};
+  const snap = state.runtime.snapshot || {};
+  const active = Number(status.activeGeneration ?? snap.generation ?? 0);
+  const pending = Number(status.pendingGeneration ?? 0);
+  const keys = (snap.keymapOverrides || []).length;
+  const objects = (snap.runtimeObjects || []).length;
+  const combos = (snap.combos || []).length;
+  const parts = [];
+  if (keys) parts.push(`${keys} key${keys === 1 ? "" : "s"}`);
+  if (combos) parts.push(`${combos} combo${combos === 1 ? "" : "s"}`);
+  if (objects) parts.push(`${objects} object${objects === 1 ? "" : "s"}`);
+  const contents = parts.length ? parts.join(", ") : "stock keymap only";
+  if (pending && pending !== active) {
+    return `generation ${pending} saved, waiting for idle (${contents}). Active: ${active || "stock"}`;
+  }
+  return `generation ${active} · ${contents}`;
+}
+
+function updateRuntimeGenerationLabel() {
+  const el = $("runtime-generation");
+  if (!el) return;
+  if (!state.runtime) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  el.hidden = false;
+  el.textContent = `Keyboard overlay: ${runtimeOverlaySummary()}`;
+}
+
 function renderRuntimeChrome() {
   const title = $("combinations-title");
   const usage = $("runtime-usage");
   const filters = $("combo-filters");
   const importBtn = $("runtime-import");
   const exportBtn = $("runtime-export");
+  const advancedBtn = $("runtime-advanced");
   const errors = $("runtime-errors");
-  if (title) title.textContent = state.runtime ? "Runtime objects" : "Combinations";
+  if (title) title.textContent = "Combinations";
   if (importBtn) importBtn.hidden = !state.runtime || !hasKeymapRuntimeSources();
   if (exportBtn) exportBtn.hidden = !state.runtime;
+  if (advancedBtn) advancedBtn.hidden = !state.runtime;
+  updateRuntimeGenerationLabel();
   if (usage) {
     usage.hidden = !state.runtime;
     usage.replaceChildren();
     if (state.runtime) {
-      const used = runtimeResourceUsage(state.runtime.draft);
-      used.keymapOverrides = Math.max(used.keymapOverrides, estimatedKeymapOverrideCount());
+      const gen = document.createElement("span");
+      gen.className = "runtime-meter";
+      gen.textContent = runtimeOverlaySummary();
+      usage.appendChild(gen);
+      const used = runtimeResourceUsage(
+        state.source === "keyboard" ? state.runtime.snapshot : state.runtime.draft
+      );
       for (const row of runtimeResourceRows(used, state.runtime.capabilities)) {
         const span = document.createElement("span");
         span.className = row.over ? "runtime-meter over" : "runtime-meter";
@@ -4255,20 +4844,17 @@ function renderRuntimeChrome() {
   }
   if (!filters) return;
   const current = state.combinationFilter || "all";
-  const buttons = state.runtime
-    ? [
-        ["all", "All"],
-        ...supportedRuntimeEditorTypes(state.runtime.capabilities).map((type) => [
-          type,
-          { holdTap: "Hold-taps", macro: "Macros", combo: "Combos", modMorph: "Mod-morphs", tapDance: "Tap-dances" }[type] || type,
-        ]),
-      ]
-    : [
-        ["all", "All"],
-        ["hold-tap", "Hold-taps"],
-        ["combo", "Combos"],
-        ["macro", "Macros"],
-      ];
+  const buttons = [
+    ["all", "All"],
+    ["hold-tap", "Hold-taps"],
+    ["combo", "Combos"],
+    ["macro", "Macros"],
+  ];
+  if (state.runtime) {
+    const extra = supportedRuntimeEditorTypes(state.runtime.capabilities);
+    if (extra.includes("modMorph")) buttons.push(["modMorph", "Mod-morphs"]);
+    if (extra.includes("tapDance")) buttons.push(["tapDance", "Tap-dances"]);
+  }
   if ([...filters.querySelectorAll("[data-filter]")].map((btn) => btn.dataset.filter).join() !== buttons.map(([id]) => id).join()) {
     filters.replaceChildren();
     for (const [id, label] of buttons) {
@@ -4281,12 +4867,6 @@ function renderRuntimeChrome() {
     }
     if (!buttons.some(([id]) => id === current)) state.combinationFilter = "all";
   }
-}
-
-function estimatedKeymapOverrideCount() {
-  if (!state.runtime || !state.studio?.layers?.length) return 0;
-  const keys = state.studio.layers[0]?.bindings?.length || keyCount();
-  return state.studio.layers.length * keys;
 }
 
 function runtimeIssueLabel(issue) {
@@ -4482,7 +5062,12 @@ function openRuntimeCreator() {
     setStatus("This firmware does not advertise any runtime object types.");
     return;
   }
-  openRuntimeEditor({ type: types[0], isNew: true });
+  const preferred = types.includes("modMorph")
+    ? "modMorph"
+    : types.includes("tapDance")
+      ? "tapDance"
+      : types[0];
+  openRuntimeEditor({ type: preferred, isNew: true });
 }
 
 function openRuntimeEditor(item = null) {
@@ -5529,8 +6114,10 @@ function boot() {
       restoreRuntimeStock().catch((err) => setStatus(err.message));
     });
     $("combo-new")?.addEventListener("click", () => {
-      if (state.runtime) openRuntimeCreator();
-      else openCombinationBuilder(null);
+      openCombinationBuilder(null);
+    });
+    $("runtime-advanced")?.addEventListener("click", () => {
+      openRuntimeCreator();
     });
     $("runtime-import")?.addEventListener("click", () => importKeymapToRuntimeDraft());
     $("runtime-export")?.addEventListener("click", () => exportRuntimeDocumentFile());
@@ -5608,6 +6195,20 @@ function boot() {
       draft.stepsDirty = false;
       syncBuilderSteps();
       if ($("builder-def")) $("builder-def").textContent = formatBuilderDefinition(draft);
+    });
+    $("builder-term")?.addEventListener("input", () => {
+      if (state.combinationDraft) {
+        state.combinationDraft.tappingTerm = Number($("builder-term").value) || state.combinationDraft.tappingTerm;
+      }
+    });
+    $("builder-quick")?.addEventListener("input", () => {
+      if (state.combinationDraft) state.combinationDraft.quickTap = Number($("builder-quick").value) || 0;
+    });
+    $("builder-idle")?.addEventListener("input", () => {
+      if (state.combinationDraft) state.combinationDraft.priorIdle = Number($("builder-idle").value) || 0;
+    });
+    $("builder-flavor")?.addEventListener("change", () => {
+      if (state.combinationDraft) state.combinationDraft.flavor = $("builder-flavor").value;
     });
     $("builder-timeout")?.addEventListener("input", () => {
       if (state.combinationDraft) state.combinationDraft.timeout = Number($("builder-timeout").value) || state.combinationDraft.timeout;

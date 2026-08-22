@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Map</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=53" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=73" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -59,6 +59,7 @@
           <h3>Connection</h3>
           <div id="studio-state" class="studio-state">Not connected</div>
           <div class="session-name" id="kb-name">Keyboard</div>
+          <p id="runtime-generation" class="runtime-generation" hidden></p>
           <button id="studio-connect" class="ghost-btn">Connect</button>
           <button id="runtime-reset" class="ghost-btn" hidden>Restore stock configuration</button>
         </section>
@@ -115,16 +116,18 @@
               <span id="builder-kind" class="combo-keys-pill">Combo</span>
               <button type="button" id="builder-x" class="settings-close" aria-label="Close">×</button>
             </div>
+            <div class="builder-io">
             <div class="builder-block step-active" id="builder-trigger-block" data-builder-step="trigger">
               <div class="assign-head">
-                <span>Trigger keys</span>
+                <span>Trigger</span>
                 <span class="field-hint" id="builder-trigger-hint">Click keys on the layout</span>
               </div>
               <div id="builder-triggers" class="builder-keys"></div>
             </div>
+            <div class="builder-io-out">
             <div class="builder-block step-idle" id="builder-output-block" data-builder-step="output">
               <div class="assign-head">
-                <span>Output keys</span>
+                <span>Output</span>
                 <span class="field-hint" id="builder-output-hint">Click keys in the palette</span>
               </div>
               <div id="builder-outputs" class="builder-keys"></div>
@@ -146,6 +149,8 @@
               </div>
               <p id="builder-hrm-set-hint" class="field-hint" hidden>Click more home-row keys, then set a modifier for each.</p>
             </div>
+            </div>
+            </div>
             <div class="builder-meta">
               <p id="builder-summary" class="builder-summary">Click a key on the layout to begin.</p>
               <label class="check tight">
@@ -155,6 +160,31 @@
             </div>
             <div id="builder-advanced-panel" class="builder-advanced" hidden>
               <pre id="builder-def" class="builder-def"></pre>
+              <div id="builder-adv-hold" hidden>
+                <div class="fields-3">
+                  <label class="field" id="builder-term-field">
+                    <span>Tapping term ms</span>
+                    <input id="builder-term" type="number" min="50" max="800" />
+                  </label>
+                  <label class="field" id="builder-quick-field">
+                    <span>Quick-tap ms</span>
+                    <input id="builder-quick" type="number" min="0" max="500" />
+                  </label>
+                  <label class="field" id="builder-idle-field">
+                    <span>Prior idle ms</span>
+                    <input id="builder-idle" type="number" min="0" max="500" />
+                  </label>
+                </div>
+                <label class="field" id="builder-flavor-field">
+                  <span>Flavor</span>
+                  <select id="builder-flavor">
+                    <option value="balanced">balanced</option>
+                    <option value="hold-preferred">hold-preferred</option>
+                    <option value="tap-preferred">tap-preferred</option>
+                    <option value="tap-unless-interrupted">tap-unless-interrupted</option>
+                  </select>
+                </label>
+              </div>
               <div id="builder-adv-combo">
                 <label class="field" id="builder-binding-field">
                   <span>Binding</span>
@@ -168,10 +198,6 @@
                   <label class="field" id="builder-layers-field">
                     <span>Layers</span>
                     <input id="builder-layers" type="text" placeholder="blank = every layer" />
-                  </label>
-                  <label class="field" id="builder-term-field">
-                    <span>Tapping term ms</span>
-                    <input id="builder-term" type="number" min="50" max="800" />
                   </label>
                 </div>
               </div>
@@ -506,6 +532,7 @@
                 <button type="button" data-filter="macro">Macros</button>
               </div>
               <button id="combo-new" type="button">+ New</button>
+              <button id="runtime-advanced" type="button" hidden>Advanced…</button>
               <button id="runtime-import" type="button" hidden>Import from keymap</button>
               <button id="runtime-export" type="button" hidden>Export snapshot</button>
             </div>
@@ -628,9 +655,9 @@
     </div>
     <div class="status" id="status">Load a keymap to begin.</div>
     <script type="module">
-      import { applyTheme } from "../../src/ui/theme.js?v=53";
+      import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=53").catch((err) => {
+      import("../../src/ui/app.js?v=73").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

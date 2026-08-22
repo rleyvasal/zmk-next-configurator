@@ -3,6 +3,7 @@ import {
   compiledAction,
   decodeRuntimeSnapshot,
   encodeRuntimeSnapshot,
+  runtimeConfigErrorMessage,
   runtimeObjectAction,
 } from "../src/connection/runtime-config.js";
 import {
@@ -16,6 +17,9 @@ import {
   isRuntimeObjectBinding,
   nextRuntimeObjectId,
   parseRuntimeObjectId,
+  comboLayerMask,
+  comboLayersFromMask,
+  runtimeComboActiveOnLayer,
   replaceDraftKeymapOverrides,
   runtimeObjectReferences,
   runtimeResourceUsage,
@@ -93,6 +97,7 @@ const snapshot = {
       output: runtimeObjectAction(12),
       slowRelease: true,
       requirePriorIdleMs: 20,
+      layerMask: 1,
     },
   ],
 };
@@ -114,6 +119,16 @@ if (roundTrip.runtimeObjects[3].actions[1].holdAction.compiledBehavior.param1 !=
 }
 if (roundTrip.combos[0].output.runtimeObjectId !== 12) throw new Error("combo action");
 if (roundTrip.combos[0].keyPositions.join(",") !== "0,4") throw new Error("combo positions");
+if (roundTrip.combos[0].layerMask !== 1) throw new Error(`combo layer mask ${roundTrip.combos[0].layerMask}`);
+if (comboLayerMask("all") !== 0 || comboLayerMask([0]) !== 1 || comboLayerMask([0, 2]) !== 5) {
+  throw new Error("comboLayerMask");
+}
+if (comboLayersFromMask(1).join(",") !== "0" || comboLayersFromMask(0) !== "all") {
+  throw new Error("comboLayersFromMask");
+}
+if (!runtimeComboActiveOnLayer({ layerMask: 1 }, 0) || runtimeComboActiveOnLayer({ layerMask: 1 }, 1)) {
+  throw new Error("runtimeComboActiveOnLayer");
+}
 
 let rejectedLayers = false;
 try {
@@ -183,6 +198,25 @@ const customDraft = replaceDraftKeymapOverrides({
 });
 if (customDraft.keymapOverrides.length !== 2 || (customDraft.skippedBindings || [])[0]?.text !== "&host_log_dump") {
   throw new Error(`custom compiled bindings must stay stock ${JSON.stringify(customDraft.skippedBindings)}`);
+}
+const matchingDraft = replaceDraftKeymapOverrides({
+  snapshot,
+  capabilities: draftCapabilities,
+  editorLayers,
+  deviceLayerIds: [0, 2],
+  behaviors: draftBehaviors,
+  studioLayers: draftStudioLayers,
+  compiledBindingTexts: [
+    ["&kp A", "&kp B", "&mo NAV"],
+    ["&kp C", "&kp X", "&kp E"],
+  ],
+});
+if (
+  matchingDraft.keymapOverrides.length !== 1 ||
+  matchingDraft.keymapOverrides[0].layerId !== 2 ||
+  matchingDraft.keymapOverrides[0].keyPosition !== 0
+) {
+  throw new Error(`matching compiled keys must not become overrides ${JSON.stringify(matchingDraft.keymapOverrides)}`);
 }
 let draftRejected = false;
 try {
@@ -374,6 +408,26 @@ const comboDraft = upsertRuntimeCombo(
 if (comboDraft.combos.at(-1).keyPositions.join(",") !== "2,1") {
   throw new Error(`combo stock map ${JSON.stringify(comboDraft.combos.at(-1))}`);
 }
+const packedCombo = decodeRuntimeSnapshot(
+  encodeRuntimeSnapshot({
+    ...snapshot,
+    generation: 0,
+    keymapOverrides: [],
+    combos: [
+      {
+        id: 7,
+        keyPositions: [2, 3],
+        timeoutMs: 50,
+        output: runtimeObjectAction(13),
+        slowRelease: false,
+        requirePriorIdleMs: 0,
+      },
+    ],
+  })
+);
+if (packedCombo.combos[0].keyPositions.join(",") !== "2,3" || packedCombo.combos[0].timeoutMs !== 50) {
+  throw new Error(`packed combo ${JSON.stringify(packedCombo.combos[0])}`);
+}
 if (selectedIndexesToStock(editorCaps, [0, 2]).join(",") !== "2,1") {
   throw new Error("selected to stock");
 }
@@ -453,6 +507,10 @@ if (cleared.runtimeObjects.some((object) => object.id === holdTapId)) {
 }
 if (runtimeResourceUsage(createRuntimeDraft(cleared)).runtimeObjects !== snapshot.runtimeObjects.length) {
   throw new Error("resource usage after delete");
+}
+
+if (!/already in progress/.test(runtimeConfigErrorMessage(7))) {
+  throw new Error(`error 7 text ${runtimeConfigErrorMessage(7)}`);
 }
 
 console.log("runtime-config client codec tests passed");

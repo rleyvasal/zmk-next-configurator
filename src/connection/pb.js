@@ -49,6 +49,14 @@ export function encodeRepeatedUint32(field, value) {
   return concatBytes([encodeKey(field, 0), encodeVarint(value)]);
 }
 
+/** Proto3 packed repeated uint32 (wire type 2). */
+export function encodePackedRepeatedUint32(field, values) {
+  const nums = (values || []).map((value) => Number(value) >>> 0);
+  if (!nums.length) return new Uint8Array();
+  const payload = concatBytes(nums.map((value) => encodeVarint(value)));
+  return concatBytes([encodeKey(field, 2), encodeVarint(payload.length), payload]);
+}
+
 export function encodeSint32(field, value) {
   if (!value) return new Uint8Array();
   return concatBytes([encodeKey(field, 0), encodeVarint(zigzag32(value))]);

@@ -11,6 +11,7 @@ import {
   describeHoldConflict,
   macroStepsFromKeys,
   outputKeysFromSteps,
+  keymapStepsFromRuntimeSteps,
   uniqueSlug,
   combinationSummary,
   suggestedName,
@@ -43,6 +44,26 @@ const hrm = classifyCombination({
 });
 if (hrm.kind !== "hold-tap" || hrm.hold !== "LCTRL" || hrm.tap !== "T" || hrm.index !== 13) {
   throw new Error(`hrm ${JSON.stringify(hrm)}`);
+}
+
+const hrmSetFour = classifyCombination({
+  hrmMode: "set",
+  holdChoice: { kind: "modifier", mod: "LGUI", binding: "&kp LGUI" },
+  setKeys: [
+    { index: 16, hold: "LGUI", tap: "N" },
+    { index: 17, hold: "LALT", tap: "E" },
+    { index: 18, hold: "LCTRL", tap: "I" },
+    { index: 19, hold: "LSHFT", tap: "O" },
+  ],
+  triggers: [
+    { index: 16, mode: "hold", holdMod: "LGUI", tap: "N", binding: "&hmr LGUI N" },
+    { index: 17, mode: "hold", holdMod: "LALT", tap: "E", binding: "&hmr LALT E" },
+    { index: 18, mode: "hold", holdMod: "LCTRL", tap: "I", binding: "&hmr LCTRL I" },
+    { index: 19, mode: "hold", holdMod: "LSHFT", tap: "O", binding: "&hmr LSHFT O" },
+  ],
+});
+if (hrmSetFour.kind !== "hold-tap-set" || hrmSetFour.setKeys.length !== 4 || hrmSetFour.setKeys[0].tap !== "N") {
+  throw new Error(`hrm set ${JSON.stringify(hrmSetFour)}`);
 }
 
 const combo = classifyCombination({
@@ -97,6 +118,20 @@ const comboDef = formatBuilderDefinition(
 if (!comboDef.includes("Binding:  &kp ESC") || !comboDef.includes("Timeout:  50") || !comboDef.includes("Layers:   0")) {
   throw new Error(comboDef);
 }
+const fromRuntime = keymapStepsFromRuntimeSteps(
+  [
+    { type: "press", action: { compiledBehavior: { behaviorId: 7, param1: 1, param2: 0 } } },
+    { type: "tap", action: { compiledBehavior: { behaviorId: 7, param1: 2, param2: 0 } } },
+    { type: "release", action: { compiledBehavior: { behaviorId: 7, param1: 1, param2: 0 } } },
+  ],
+  (action) => (action?.compiledBehavior?.param1 === 1 ? "&kp LGUI" : "&kp Q")
+);
+if (fromRuntime.map((s) => `${s.kind}:${s.keys}`).join(",") !== "press:&kp LGUI,tap:&kp Q,release:&kp LGUI") {
+  throw new Error(`runtime steps ${JSON.stringify(fromRuntime)}`);
+}
+const friendly = outputKeysFromSteps(fromRuntime);
+if (friendly.advanced || friendly.keys.length !== 2) throw new Error("runtime lock should open as friendly holds+tap");
+
 const macDef = formatBuilderDefinition({
   outputs: [
     { binding: "&kp LGUI", mode: "hold" },
@@ -181,6 +216,31 @@ const sumHrm = combinationSummary(
   label
 );
 if (!sumHrm.includes("home-row") || !sumHrm.includes("T")) throw new Error(sumHrm);
+
+const sumHrmSet = combinationSummary(
+  {
+    hrmMode: "set",
+    holdChoice: { kind: "modifier", mod: "LGUI", binding: "&kp LGUI" },
+    setKeys: [
+      { index: 16, hold: "LGUI", tap: "N" },
+      { index: 17, hold: "LALT", tap: "E" },
+    ],
+    triggers: [
+      { index: 16, mode: "hold", holdMod: "LGUI", tap: "N" },
+      { index: 17, mode: "hold", holdMod: "LALT", tap: "E" },
+    ],
+  },
+  (k) => {
+    if (k.tap === "N" || String(k.binding || "").includes(" N")) return "N";
+    if (k.tap === "E" || String(k.binding || "").includes(" E")) return "E";
+    if (String(k.binding || k.holdMod || "").includes("LGUI")) return "⌘";
+    if (String(k.binding || k.holdMod || "").includes("LALT")) return "⌥";
+    return k.tap || k.holdMod || "";
+  }
+);
+if (!sumHrmSet.includes("Home-row set") || !sumHrmSet.includes("N") || !sumHrmSet.includes("⌘")) {
+  throw new Error(sumHrmSet);
+}
 
 const sumCombo = combinationSummary(
   {
