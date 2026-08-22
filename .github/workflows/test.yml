@@ -20,6 +20,10 @@ jobs:
           repository: rleyvasal/zmk-next-messages
           token: ${{ secrets.MESSAGES_REPO_TOKEN }}
           path: zmk-next-messages
+          # zmk-next-messages' default branch (runtime-config-v0.1) predates
+          # layer_mask and this whole session's work; the actual development
+          # branch is runtime-config-tap-dances. Revisit once that merges.
+          ref: runtime-config-tap-dances
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
