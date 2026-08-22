@@ -7,12 +7,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # `if:` can't reference `secrets` directly, so thread it through env first.
+      HAS_MESSAGES_TOKEN: ${{ secrets.MESSAGES_REPO_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           path: zmk-next-configurator
       - uses: actions/checkout@v4
-        if: ${{ secrets.MESSAGES_REPO_TOKEN != '' }}
+        if: ${{ env.HAS_MESSAGES_TOKEN == 'true' }}
         with:
           repository: rleyvasal/zmk-next-messages
           token: ${{ secrets.MESSAGES_REPO_TOKEN }}
@@ -21,14 +24,14 @@ jobs:
         with:
           node-version: "20"
       - uses: actions/setup-python@v5
-        if: ${{ secrets.MESSAGES_REPO_TOKEN != '' }}
+        if: ${{ env.HAS_MESSAGES_TOKEN == 'true' }}
         with:
           python-version: "3.11"
       - name: Install protoc
-        if: ${{ secrets.MESSAGES_REPO_TOKEN != '' }}
+        if: ${{ env.HAS_MESSAGES_TOKEN == 'true' }}
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install zmk-next-messages Python deps
-        if: ${{ secrets.MESSAGES_REPO_TOKEN != '' }}
+        if: ${{ env.HAS_MESSAGES_TOKEN == 'true' }}
         run: python3 -m pip install -r zmk-next-messages/requirements-dev.txt
       - name: Run tests
         working-directory: zmk-next-configurator
