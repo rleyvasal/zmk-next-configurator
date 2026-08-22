@@ -5778,7 +5778,7 @@ function applyProfileObject(profile, opts = {}) {
   state.keys = profile.keys;
   if (opts.imported) state.importedProfile = profile;
   if (opts.persist !== false && PROFILE_INDEX.some((p) => p.id === profile.id)) {
-    localStorage.setItem("zmkmap-layout", profile.id);
+    localStorage.setItem("keymap-layout", profile.id);
   }
   fillLayoutSelect();
   updateKeyboardName();
@@ -5828,7 +5828,7 @@ async function applyDiscoveredRepo() {
   if (disc.origin === "github") {
     const { owner, repo, branch } = disc.ref;
     state.githubRef = { owner, repo, branch, path: kmPath };
-    localStorage.setItem("zmkmap-github", `${owner}/${repo}`);
+    localStorage.setItem("keymap-github", `${owner}/${repo}`);
     loadKeymapText(text, `${owner}/${repo}/${kmPath}`, "github");
   } else {
     state.githubRef = null;
@@ -5871,7 +5871,7 @@ async function loadFromLocalPath(path) {
 }
 
 async function loadFromGitHub() {
-  const saved = localStorage.getItem("zmkmap-github") || "rleyvasal/totem-zmk-config";
+  const saved = localStorage.getItem("keymap-github") || "rleyvasal/totem-zmk-config";
   const input = window.prompt("GitHub repo or local path", saved);
   if (!input) return;
   const ref = parseGithubInput(input);
@@ -5988,7 +5988,7 @@ function sampleKeymapUrl() {
 }
 
 function currentProfileId() {
-  return $("layout-profile")?.value || localStorage.getItem("zmkmap-layout") || "totem";
+  return $("layout-profile")?.value || localStorage.getItem("keymap-layout") || "totem";
 }
 
 function fillLayoutSelect() {
@@ -6065,7 +6065,7 @@ function darkReaderActive() {
 function maybeWarnDarkReader() {
   const el = $("theme-notice");
   if (!el) return;
-  if (sessionStorage.getItem("zmkmap-hide-theme-notice")) return;
+  if (sessionStorage.getItem("hide-theme-notice")) return;
   const show = () => {
     if (darkReaderActive()) el.hidden = false;
   };
@@ -6073,7 +6073,7 @@ function maybeWarnDarkReader() {
   setTimeout(show, 400);
   $("theme-notice-x")?.addEventListener("click", () => {
     el.hidden = true;
-    sessionStorage.setItem("zmkmap-hide-theme-notice", "1");
+    sessionStorage.setItem("hide-theme-notice", "1");
   });
 }
 

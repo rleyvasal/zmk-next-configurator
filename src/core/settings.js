@@ -2,7 +2,7 @@
  * Global editor preferences. One localStorage blob; does not change keycodes.
  */
 
-export const SETTINGS_KEY = "zmkmap-settings";
+export const SETTINGS_KEY = "keymap-settings";
 export const LEGACY_EMPTY_KEY = "zmkmap-empty-binding";
 
 export const OS_CHOICES = [
