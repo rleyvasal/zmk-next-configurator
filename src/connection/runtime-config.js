@@ -23,26 +23,30 @@ import {
   fieldStr,
   fieldU32,
 } from "./pb.js";
+import { FIELDS, ENUMS } from "./fields.generated.js";
+
+const F = FIELDS.runtime_config;
+const E = ENUMS.runtime_config;
 
 export const RUNTIME_PROTOCOL_VERSION = 1;
 
 export const RUNTIME_CONFIG_ERROR = Object.freeze({
-  OK: 0,
-  INVALID_REQUEST: 1,
-  PROTOCOL_VERSION: 2,
-  SNAPSHOT_SCHEMA_VERSION: 3,
-  CAPABILITY_FINGERPRINT: 4,
-  STALE_GENERATION: 5,
-  UPDATE_NOT_FOUND: 6,
-  UPDATE_IN_PROGRESS: 7,
-  UPDATE_INCOMPLETE: 8,
-  INVALID_CHUNK: 9,
-  VALIDATION: 10,
-  RESOURCE_LIMIT: 11,
-  PERSISTENCE: 12,
-  ACTIVATION: 13,
-  NOT_SUPPORTED: 14,
-  INTERNAL: 15,
+  OK: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_OK,
+  INVALID_REQUEST: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_INVALID_REQUEST,
+  PROTOCOL_VERSION: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_PROTOCOL_VERSION,
+  SNAPSHOT_SCHEMA_VERSION: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_SNAPSHOT_SCHEMA_VERSION,
+  CAPABILITY_FINGERPRINT: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_CAPABILITY_FINGERPRINT,
+  STALE_GENERATION: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_STALE_GENERATION,
+  UPDATE_NOT_FOUND: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_UPDATE_NOT_FOUND,
+  UPDATE_IN_PROGRESS: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_UPDATE_IN_PROGRESS,
+  UPDATE_INCOMPLETE: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_UPDATE_INCOMPLETE,
+  INVALID_CHUNK: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_INVALID_CHUNK,
+  VALIDATION: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_VALIDATION,
+  RESOURCE_LIMIT: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_RESOURCE_LIMIT,
+  PERSISTENCE: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_PERSISTENCE,
+  ACTIVATION: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_ACTIVATION,
+  NOT_SUPPORTED: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_NOT_SUPPORTED,
+  INTERNAL: E.RuntimeConfigErrorCode.RUNTIME_CONFIG_ERROR_INTERNAL,
 });
 
 const RUNTIME_CONFIG_ERROR_TEXT = {
@@ -69,17 +73,17 @@ export function runtimeConfigErrorMessage(code, message = "") {
 }
 
 export const RUNTIME_OBJECT_TYPE = Object.freeze({
-  MOD_MORPH: 1,
-  MACRO: 2,
-  HOLD_TAP: 3,
-  TAP_DANCE: 4,
+  MOD_MORPH: E.RuntimeObjectType.RUNTIME_OBJECT_TYPE_MOD_MORPH,
+  MACRO: E.RuntimeObjectType.RUNTIME_OBJECT_TYPE_MACRO,
+  HOLD_TAP: E.RuntimeObjectType.RUNTIME_OBJECT_TYPE_HOLD_TAP,
+  TAP_DANCE: E.RuntimeObjectType.RUNTIME_OBJECT_TYPE_TAP_DANCE,
 });
 
 export const HOLD_TAP_FLAVOR = Object.freeze({
-  HOLD_PREFERRED: 1,
-  BALANCED: 2,
-  TAP_PREFERRED: 3,
-  TAP_UNLESS_INTERRUPTED: 4,
+  HOLD_PREFERRED: E.HoldTapFlavor.HOLD_TAP_FLAVOR_HOLD_PREFERRED,
+  BALANCED: E.HoldTapFlavor.HOLD_TAP_FLAVOR_BALANCED,
+  TAP_PREFERRED: E.HoldTapFlavor.HOLD_TAP_FLAVOR_TAP_PREFERRED,
+  TAP_UNLESS_INTERRUPTED: E.HoldTapFlavor.HOLD_TAP_FLAVOR_TAP_UNLESS_INTERRUPTED,
 });
 
 export class RuntimeValidationError extends Error {
@@ -146,39 +150,45 @@ function encodeAction(action, options) {
   if (normalized.compiledBehavior) {
     const compiled = normalized.compiledBehavior;
     return encodeSub(
-      1,
+      F.ActionReference.compiled_behavior,
       concatBytes([
-        encodeUint32(1, compiled.behaviorId),
-        encodeUint32(2, compiled.param1),
-        encodeUint32(3, compiled.param2),
+        encodeUint32(F.CompiledBehaviorAction.behavior_id, compiled.behaviorId),
+        encodeUint32(F.CompiledBehaviorAction.param1, compiled.param1),
+        encodeUint32(F.CompiledBehaviorAction.param2, compiled.param2),
       ])
     );
   }
-  return encodeUint32(2, normalized.runtimeObjectId);
+  return encodeUint32(F.ActionReference.runtime_object_id, normalized.runtimeObjectId);
 }
 
 function decodeAction(fields) {
-  const compiled = fieldMsgs(fields, 1)[0];
-  if (compiled) return compiledAction(fieldU32(compiled, 1), fieldU32(compiled, 2), fieldU32(compiled, 3));
-  const ids = fieldNums(fields, 2);
+  const compiled = fieldMsgs(fields, F.ActionReference.compiled_behavior)[0];
+  if (compiled) {
+    return compiledAction(
+      fieldU32(compiled, F.CompiledBehaviorAction.behavior_id),
+      fieldU32(compiled, F.CompiledBehaviorAction.param1),
+      fieldU32(compiled, F.CompiledBehaviorAction.param2)
+    );
+  }
+  const ids = fieldNums(fields, F.ActionReference.runtime_object_id);
   if (ids.length) return runtimeObjectAction(ids[0]);
   throw new Error("runtime action has no target");
 }
 
 function encodeKeymapOverride(override) {
   return concatBytes([
-    encodeUint32(1, u32(override.layerId, "keymap override layer ID")),
-    encodeUint32(2, u32(override.keyPosition, "keymap override position")),
-    encodeSub(3, encodeAction(override.action)),
+    encodeUint32(F.KeymapOverride.layer_id, u32(override.layerId, "keymap override layer ID")),
+    encodeUint32(F.KeymapOverride.key_position, u32(override.keyPosition, "keymap override position")),
+    encodeSub(F.KeymapOverride.action, encodeAction(override.action)),
   ]);
 }
 
 function decodeKeymapOverride(fields) {
-  const action = fieldMsgs(fields, 3)[0];
+  const action = fieldMsgs(fields, F.KeymapOverride.action)[0];
   if (!action) throw new Error("keymap override action is required");
   return {
-    layerId: fieldU32(fields, 1),
-    keyPosition: fieldU32(fields, 2),
+    layerId: fieldU32(fields, F.KeymapOverride.layer_id),
+    keyPosition: fieldU32(fields, F.KeymapOverride.key_position),
     action: decodeAction(action),
   };
 }
@@ -187,47 +197,49 @@ function encodeMacroStep(step) {
   if (!step || typeof step !== "object") throw new Error("macro step is required");
   switch (step.type) {
     case "tap":
-      return encodeSub(1, encodeAction(step.action, { allowRuntimeObject: false }));
+      return encodeSub(F.MacroStep.tap, encodeAction(step.action, { allowRuntimeObject: false }));
     case "press":
-      return encodeSub(2, encodeAction(step.action, { allowRuntimeObject: false }));
+      return encodeSub(F.MacroStep.press, encodeAction(step.action, { allowRuntimeObject: false }));
     case "release":
-      return encodeSub(3, encodeAction(step.action, { allowRuntimeObject: false }));
+      return encodeSub(F.MacroStep.release, encodeAction(step.action, { allowRuntimeObject: false }));
     case "wait":
-      return concatBytes([encodeKey(4, 0), encodeVarint(u32(step.ms, "macro wait ms"))]);
+      return concatBytes([encodeKey(F.MacroStep.wait_ms, 0), encodeVarint(u32(step.ms, "macro wait ms"))]);
     case "pauseUntilRelease":
-      return encodeBool(5, true);
+      return encodeBool(F.MacroStep.pause_until_release, true);
     default:
       throw new Error(`unsupported macro step ${step.type}`);
   }
 }
 
 function decodeMacroStep(fields) {
-  const tap = fieldMsgs(fields, 1)[0];
+  const tap = fieldMsgs(fields, F.MacroStep.tap)[0];
   if (tap) return { type: "tap", action: decodeAction(tap) };
-  const press = fieldMsgs(fields, 2)[0];
+  const press = fieldMsgs(fields, F.MacroStep.press)[0];
   if (press) return { type: "press", action: decodeAction(press) };
-  const release = fieldMsgs(fields, 3)[0];
+  const release = fieldMsgs(fields, F.MacroStep.release)[0];
   if (release) return { type: "release", action: decodeAction(release) };
-  if (fieldNums(fields, 4).length) return { type: "wait", ms: fieldU32(fields, 4) };
-  if (fieldNums(fields, 5)[0]) return { type: "pauseUntilRelease" };
+  if (fieldNums(fields, F.MacroStep.wait_ms).length) {
+    return { type: "wait", ms: fieldU32(fields, F.MacroStep.wait_ms) };
+  }
+  if (fieldNums(fields, F.MacroStep.pause_until_release)[0]) return { type: "pauseUntilRelease" };
   throw new Error("macro step has no instruction");
 }
 
 function encodeRuntimeObject(object) {
   const id = u32(object.id, "runtime object ID");
   if (!id) throw new Error("runtime object ID must be nonzero");
-  const base = [encodeUint32(1, id)];
+  const base = [encodeUint32(F.RuntimeObject.id, id)];
   switch (object.type) {
     case "modMorph":
     case RUNTIME_OBJECT_TYPE.MOD_MORPH:
       return concatBytes([
         ...base,
         encodeSub(
-          2,
+          F.RuntimeObject.mod_morph,
           concatBytes([
-            encodeUint32(1, u32(object.modifiers, "mod-morph modifiers")),
-            encodeSub(2, encodeAction(object.normalAction, { allowRuntimeObject: false })),
-            encodeSub(3, encodeAction(object.morphedAction, { allowRuntimeObject: false })),
+            encodeUint32(F.ModMorphObject.modifiers, u32(object.modifiers, "mod-morph modifiers")),
+            encodeSub(F.ModMorphObject.normal_action, encodeAction(object.normalAction, { allowRuntimeObject: false })),
+            encodeSub(F.ModMorphObject.morphed_action, encodeAction(object.morphedAction, { allowRuntimeObject: false })),
           ])
         ),
       ]);
@@ -235,21 +247,26 @@ function encodeRuntimeObject(object) {
     case RUNTIME_OBJECT_TYPE.MACRO:
       return concatBytes([
         ...base,
-        encodeSub(3, concatBytes(array(object.steps, "macro steps").map((step) => encodeSub(1, encodeMacroStep(step))))),
+        encodeSub(
+          F.RuntimeObject.macro,
+          concatBytes(
+            array(object.steps, "macro steps").map((step) => encodeSub(F.MacroObject.steps, encodeMacroStep(step)))
+          )
+        ),
       ]);
     case "holdTap":
     case RUNTIME_OBJECT_TYPE.HOLD_TAP:
       return concatBytes([
         ...base,
         encodeSub(
-          4,
+          F.RuntimeObject.hold_tap,
           concatBytes([
-            encodeSub(1, encodeAction(object.tapAction, { allowRuntimeObject: false })),
-            encodeSub(2, encodeAction(object.holdAction, { allowRuntimeObject: false })),
-            encodeUint32(3, u32(object.flavor, "hold-tap flavor")),
-            encodeUint32(4, u32(object.tappingTermMs, "hold-tap tapping term")),
-            encodeUint32(5, u32(object.quickTapMs ?? 0, "hold-tap quick tap")),
-            encodeUint32(6, u32(object.requirePriorIdleMs ?? 0, "hold-tap prior idle")),
+            encodeSub(F.HoldTapObject.tap_action, encodeAction(object.tapAction, { allowRuntimeObject: false })),
+            encodeSub(F.HoldTapObject.hold_action, encodeAction(object.holdAction, { allowRuntimeObject: false })),
+            encodeUint32(F.HoldTapObject.flavor, u32(object.flavor, "hold-tap flavor")),
+            encodeUint32(F.HoldTapObject.tapping_term_ms, u32(object.tappingTermMs, "hold-tap tapping term")),
+            encodeUint32(F.HoldTapObject.quick_tap_ms, u32(object.quickTapMs ?? 0, "hold-tap quick tap")),
+            encodeUint32(F.HoldTapObject.require_prior_idle_ms, u32(object.requirePriorIdleMs ?? 0, "hold-tap prior idle")),
           ])
         ),
       ]);
@@ -260,21 +277,21 @@ function encodeRuntimeObject(object) {
       return concatBytes([
         ...base,
         encodeSub(
-          5,
+          F.RuntimeObject.tap_dance,
           concatBytes([
             ...actions.map((action, index) => {
               const count = u32(action.tapCount, "tap-dance tap count");
               if (count !== index + 1) throw new Error("tap-dance tap counts must be consecutive from one");
               return encodeSub(
-                1,
+                F.TapDanceObject.actions,
                 concatBytes([
-                  encodeUint32(1, count),
-                  encodeSub(2, encodeAction(action.tapAction, { allowRuntimeObject: false })),
-                  encodeSub(3, encodeAction(action.holdAction, { allowRuntimeObject: false })),
+                  encodeUint32(F.TapDanceAction.tap_count, count),
+                  encodeSub(F.TapDanceAction.tap_action, encodeAction(action.tapAction, { allowRuntimeObject: false })),
+                  encodeSub(F.TapDanceAction.hold_action, encodeAction(action.holdAction, { allowRuntimeObject: false })),
                 ])
               );
             }),
-            encodeUint32(2, u32(object.tappingTermMs, "tap-dance tapping term")),
+            encodeUint32(F.TapDanceObject.tapping_term_ms, u32(object.tappingTermMs, "tap-dance tapping term")),
           ])
         ),
       ]);
@@ -285,44 +302,44 @@ function encodeRuntimeObject(object) {
 }
 
 function decodeRuntimeObject(fields) {
-  const id = fieldU32(fields, 1);
+  const id = fieldU32(fields, F.RuntimeObject.id);
   if (!id) throw new Error("runtime object ID is required");
-  const modMorph = fieldMsgs(fields, 2)[0];
+  const modMorph = fieldMsgs(fields, F.RuntimeObject.mod_morph)[0];
   if (modMorph) {
     return {
       id,
       type: "modMorph",
-      modifiers: fieldU32(modMorph, 1),
-      normalAction: decodeAction(fieldMsgs(modMorph, 2)[0]),
-      morphedAction: decodeAction(fieldMsgs(modMorph, 3)[0]),
+      modifiers: fieldU32(modMorph, F.ModMorphObject.modifiers),
+      normalAction: decodeAction(fieldMsgs(modMorph, F.ModMorphObject.normal_action)[0]),
+      morphedAction: decodeAction(fieldMsgs(modMorph, F.ModMorphObject.morphed_action)[0]),
     };
   }
-  const macro = fieldMsgs(fields, 3)[0];
-  if (macro) return { id, type: "macro", steps: fieldMsgs(macro, 1).map(decodeMacroStep) };
-  const holdTap = fieldMsgs(fields, 4)[0];
+  const macro = fieldMsgs(fields, F.RuntimeObject.macro)[0];
+  if (macro) return { id, type: "macro", steps: fieldMsgs(macro, F.MacroObject.steps).map(decodeMacroStep) };
+  const holdTap = fieldMsgs(fields, F.RuntimeObject.hold_tap)[0];
   if (holdTap) {
     return {
       id,
       type: "holdTap",
-      tapAction: decodeAction(fieldMsgs(holdTap, 1)[0]),
-      holdAction: decodeAction(fieldMsgs(holdTap, 2)[0]),
-      flavor: fieldU32(holdTap, 3),
-      tappingTermMs: fieldU32(holdTap, 4),
-      quickTapMs: fieldU32(holdTap, 5),
-      requirePriorIdleMs: fieldU32(holdTap, 6),
+      tapAction: decodeAction(fieldMsgs(holdTap, F.HoldTapObject.tap_action)[0]),
+      holdAction: decodeAction(fieldMsgs(holdTap, F.HoldTapObject.hold_action)[0]),
+      flavor: fieldU32(holdTap, F.HoldTapObject.flavor),
+      tappingTermMs: fieldU32(holdTap, F.HoldTapObject.tapping_term_ms),
+      quickTapMs: fieldU32(holdTap, F.HoldTapObject.quick_tap_ms),
+      requirePriorIdleMs: fieldU32(holdTap, F.HoldTapObject.require_prior_idle_ms),
     };
   }
-  const tapDance = fieldMsgs(fields, 5)[0];
+  const tapDance = fieldMsgs(fields, F.RuntimeObject.tap_dance)[0];
   if (tapDance) {
     return {
       id,
       type: "tapDance",
-      actions: fieldMsgs(tapDance, 1).map((action) => ({
-        tapCount: fieldU32(action, 1),
-        tapAction: decodeAction(fieldMsgs(action, 2)[0]),
-        holdAction: decodeAction(fieldMsgs(action, 3)[0]),
+      actions: fieldMsgs(tapDance, F.TapDanceObject.actions).map((action) => ({
+        tapCount: fieldU32(action, F.TapDanceAction.tap_count),
+        tapAction: decodeAction(fieldMsgs(action, F.TapDanceAction.tap_action)[0]),
+        holdAction: decodeAction(fieldMsgs(action, F.TapDanceAction.hold_action)[0]),
       })),
-      tappingTermMs: fieldU32(tapDance, 2),
+      tappingTermMs: fieldU32(tapDance, F.TapDanceObject.tapping_term_ms),
     };
   }
   throw new Error("runtime object has no definition");
@@ -331,30 +348,30 @@ function decodeRuntimeObject(fields) {
 function encodeCombo(combo) {
   const positions = array(combo.keyPositions, "combo key positions");
   return concatBytes([
-    encodeUint32(1, u32(combo.id, "combo ID")),
+    encodeUint32(F.ComboDefinition.id, u32(combo.id, "combo ID")),
     encodePackedRepeatedUint32(
-      2,
+      F.ComboDefinition.key_positions,
       positions.map((position) => u32(position, "combo position"))
     ),
-    encodeUint32(3, u32(combo.timeoutMs, "combo timeout")),
-    encodeSub(4, encodeAction(combo.output)),
-    encodeBool(5, !!combo.slowRelease),
-    encodeUint32(6, u32(combo.requirePriorIdleMs ?? 0, "combo prior idle")),
-    encodeUint32(7, u32(combo.layerMask ?? 0, "combo layer mask")),
+    encodeUint32(F.ComboDefinition.timeout_ms, u32(combo.timeoutMs, "combo timeout")),
+    encodeSub(F.ComboDefinition.output, encodeAction(combo.output)),
+    encodeBool(F.ComboDefinition.slow_release, !!combo.slowRelease),
+    encodeUint32(F.ComboDefinition.require_prior_idle_ms, u32(combo.requirePriorIdleMs ?? 0, "combo prior idle")),
+    encodeUint32(F.ComboDefinition.layer_mask, u32(combo.layerMask ?? 0, "combo layer mask")),
   ]);
 }
 
 function decodeCombo(fields) {
-  const output = fieldMsgs(fields, 4)[0];
+  const output = fieldMsgs(fields, F.ComboDefinition.output)[0];
   if (!output) throw new Error("combo output is required");
   return {
-    id: fieldU32(fields, 1),
-    keyPositions: fieldNums(fields, 2),
-    timeoutMs: fieldU32(fields, 3),
+    id: fieldU32(fields, F.ComboDefinition.id),
+    keyPositions: fieldNums(fields, F.ComboDefinition.key_positions),
+    timeoutMs: fieldU32(fields, F.ComboDefinition.timeout_ms),
     output: decodeAction(output),
-    slowRelease: !!fieldU32(fields, 5),
-    requirePriorIdleMs: fieldU32(fields, 6),
-    layerMask: fieldU32(fields, 7),
+    slowRelease: !!fieldU32(fields, F.ComboDefinition.slow_release),
+    requirePriorIdleMs: fieldU32(fields, F.ComboDefinition.require_prior_idle_ms),
+    layerMask: fieldU32(fields, F.ComboDefinition.layer_mask),
   };
 }
 
@@ -364,113 +381,117 @@ export function encodeRuntimeSnapshot(snapshot) {
   const layers = array(snapshot.layers || [], "layer metadata");
   if (layers.length) throw new Error("layer metadata is not supported by Runtime Config v1");
   return concatBytes([
-    encodeUint32(1, u32(snapshot.persistenceSchemaVersion, "persistence schema version")),
-    encodeUint32(2, u32(snapshot.generation ?? 0, "generation")),
-    encodeBytes(3, fingerprint),
-    ...array(snapshot.keymapOverrides || [], "keymap overrides").map((item) => encodeSub(4, encodeKeymapOverride(item))),
-    ...array(snapshot.runtimeObjects || [], "runtime objects").map((item) => encodeSub(6, encodeRuntimeObject(item))),
-    ...array(snapshot.combos || [], "combos").map((item) => encodeSub(7, encodeCombo(item))),
+    encodeUint32(F.RuntimeConfigSnapshot.persistence_schema_version, u32(snapshot.persistenceSchemaVersion, "persistence schema version")),
+    encodeUint32(F.RuntimeConfigSnapshot.generation, u32(snapshot.generation ?? 0, "generation")),
+    encodeBytes(F.RuntimeConfigSnapshot.capability_fingerprint, fingerprint),
+    ...array(snapshot.keymapOverrides || [], "keymap overrides").map((item) =>
+      encodeSub(F.RuntimeConfigSnapshot.keymap_overrides, encodeKeymapOverride(item))
+    ),
+    ...array(snapshot.runtimeObjects || [], "runtime objects").map((item) =>
+      encodeSub(F.RuntimeConfigSnapshot.runtime_objects, encodeRuntimeObject(item))
+    ),
+    ...array(snapshot.combos || [], "combos").map((item) => encodeSub(F.RuntimeConfigSnapshot.combos, encodeCombo(item))),
   ]);
 }
 
 export function decodeRuntimeSnapshot(data) {
   const fields = data instanceof Map ? data : decodeFields(data);
   return {
-    persistenceSchemaVersion: fieldU32(fields, 1),
-    generation: fieldU32(fields, 2),
-    capabilityFingerprint: fieldBytes(fields, 3),
-    keymapOverrides: fieldMsgs(fields, 4).map(decodeKeymapOverride),
-    layers: fieldMsgs(fields, 5).map((layer) => ({
-      layerId: fieldU32(layer, 1),
-      name: fieldStr(layer, 2),
-      order: fieldU32(layer, 3),
+    persistenceSchemaVersion: fieldU32(fields, F.RuntimeConfigSnapshot.persistence_schema_version),
+    generation: fieldU32(fields, F.RuntimeConfigSnapshot.generation),
+    capabilityFingerprint: fieldBytes(fields, F.RuntimeConfigSnapshot.capability_fingerprint),
+    keymapOverrides: fieldMsgs(fields, F.RuntimeConfigSnapshot.keymap_overrides).map(decodeKeymapOverride),
+    layers: fieldMsgs(fields, F.RuntimeConfigSnapshot.layers).map((layer) => ({
+      layerId: fieldU32(layer, F.LayerMetadata.layer_id),
+      name: fieldStr(layer, F.LayerMetadata.name),
+      order: fieldU32(layer, F.LayerMetadata.order),
     })),
-    runtimeObjects: fieldMsgs(fields, 6).map(decodeRuntimeObject),
-    combos: fieldMsgs(fields, 7).map(decodeCombo),
+    runtimeObjects: fieldMsgs(fields, F.RuntimeConfigSnapshot.runtime_objects).map(decodeRuntimeObject),
+    combos: fieldMsgs(fields, F.RuntimeConfigSnapshot.combos).map(decodeCombo),
   };
 }
 
 function decodeStatus(fields) {
   return {
-    state: fieldU32(fields, 1),
-    activeGeneration: fieldU32(fields, 2),
-    pendingGeneration: fieldU32(fields, 3),
+    state: fieldU32(fields, F.RuntimeConfigStatus.state),
+    activeGeneration: fieldU32(fields, F.RuntimeConfigStatus.active_generation),
+    pendingGeneration: fieldU32(fields, F.RuntimeConfigStatus.pending_generation),
   };
 }
 
 function decodeDiagnostic(fields) {
-  const keyLocation = fieldMsgs(fields, 6)[0];
+  const keyLocation = fieldMsgs(fields, F.RuntimeConfigDiagnostic.key_location)[0];
   return {
-    severity: fieldU32(fields, 1),
-    code: fieldU32(fields, 2),
-    message: fieldStr(fields, 3),
-    runtimeObjectId: fieldNums(fields, 4)[0],
-    comboId: fieldNums(fields, 5)[0],
+    severity: fieldU32(fields, F.RuntimeConfigDiagnostic.severity),
+    code: fieldU32(fields, F.RuntimeConfigDiagnostic.code),
+    message: fieldStr(fields, F.RuntimeConfigDiagnostic.message),
+    runtimeObjectId: fieldNums(fields, F.RuntimeConfigDiagnostic.runtime_object_id)[0],
+    comboId: fieldNums(fields, F.RuntimeConfigDiagnostic.combo_id)[0],
     keyLocation: keyLocation
-      ? { layerId: fieldU32(keyLocation, 1), keyPosition: fieldU32(keyLocation, 2) }
+      ? { layerId: fieldU32(keyLocation, F.KeyLocation.layer_id), keyPosition: fieldU32(keyLocation, F.KeyLocation.key_position) }
       : null,
-    fieldPath: fieldStr(fields, 7),
+    fieldPath: fieldStr(fields, F.RuntimeConfigDiagnostic.field_path),
   };
 }
 
 function decodeError(fields) {
   return {
-    code: fieldU32(fields, 1),
-    message: fieldStr(fields, 2),
-    diagnostics: fieldMsgs(fields, 3).map(decodeDiagnostic),
+    code: fieldU32(fields, F.RuntimeConfigError.code),
+    message: fieldStr(fields, F.RuntimeConfigError.message),
+    diagnostics: fieldMsgs(fields, F.RuntimeConfigError.diagnostics).map(decodeDiagnostic),
   };
 }
 
 function decodeCapabilities(fields) {
-  const limits = fieldMsgs(fields, 6)[0] || new Map();
+  const limits = fieldMsgs(fields, F.RuntimeCapabilities.limits)[0] || new Map();
   return {
-    protocolVersion: fieldU32(fields, 1),
-    persistenceSchemaVersion: fieldU32(fields, 2),
-    capabilityFingerprint: fieldBytes(fields, 3),
-    supportedObjectTypes: fieldNums(fields, 4),
-    supportedFeatures: fieldNums(fields, 5),
-    selectedPositionCount: fieldU32(fields, 8),
-    selectedToStockPositions: fieldNums(fields, 9),
+    protocolVersion: fieldU32(fields, F.RuntimeCapabilities.protocol_version),
+    persistenceSchemaVersion: fieldU32(fields, F.RuntimeCapabilities.persistence_schema_version),
+    capabilityFingerprint: fieldBytes(fields, F.RuntimeCapabilities.capability_fingerprint),
+    supportedObjectTypes: fieldNums(fields, F.RuntimeCapabilities.supported_object_types),
+    supportedFeatures: fieldNums(fields, F.RuntimeCapabilities.supported_features),
+    selectedPositionCount: fieldU32(fields, F.RuntimeCapabilities.selected_position_count),
+    selectedToStockPositions: fieldNums(fields, F.RuntimeCapabilities.selected_to_stock_positions),
     limits: {
-      maxRuntimeObjects: fieldU32(limits, 1),
-      maxCombos: fieldU32(limits, 2),
-      maxComboKeys: fieldU32(limits, 3),
-      maxMacroSteps: fieldU32(limits, 4),
-      maxPersistedBytes: fieldU32(limits, 5),
-      maxLayers: fieldU32(limits, 6),
-      maxKeymapOverrides: fieldU32(limits, 7),
-      maxTapDanceActions: fieldU32(limits, 8),
+      maxRuntimeObjects: fieldU32(limits, F.RuntimeConfigLimits.max_runtime_objects),
+      maxCombos: fieldU32(limits, F.RuntimeConfigLimits.max_combos),
+      maxComboKeys: fieldU32(limits, F.RuntimeConfigLimits.max_combo_keys),
+      maxMacroSteps: fieldU32(limits, F.RuntimeConfigLimits.max_macro_steps),
+      maxPersistedBytes: fieldU32(limits, F.RuntimeConfigLimits.max_persisted_bytes),
+      maxLayers: fieldU32(limits, F.RuntimeConfigLimits.max_layers),
+      maxKeymapOverrides: fieldU32(limits, F.RuntimeConfigLimits.max_keymap_overrides),
+      maxTapDanceActions: fieldU32(limits, F.RuntimeConfigLimits.max_tap_dance_actions),
     },
   };
 }
 
 function decodeValidation(fields) {
-  const usage = fieldMsgs(fields, 4)[0] || new Map();
+  const usage = fieldMsgs(fields, F.ValidationResult.resource_usage)[0] || new Map();
   const resourceUse = (field) => {
     const use = fieldMsgs(usage, field)[0] || new Map();
-    return { used: fieldU32(use, 1), limit: fieldU32(use, 2) };
+    return { used: fieldU32(use, F.ResourceUse.used), limit: fieldU32(use, F.ResourceUse.limit) };
   };
   return {
-    valid: !!fieldU32(fields, 1),
-    errors: fieldMsgs(fields, 2).map(decodeDiagnostic),
-    warnings: fieldMsgs(fields, 3).map(decodeDiagnostic),
+    valid: !!fieldU32(fields, F.ValidationResult.valid),
+    errors: fieldMsgs(fields, F.ValidationResult.errors).map(decodeDiagnostic),
+    warnings: fieldMsgs(fields, F.ValidationResult.warnings).map(decodeDiagnostic),
     resourceUsage: {
-      runtimeObjects: resourceUse(1),
-      combos: resourceUse(2),
-      macroSteps: resourceUse(3),
-      persistedBytes: resourceUse(4),
-      keymapOverrides: resourceUse(5),
-      tapDanceActions: resourceUse(6),
+      runtimeObjects: resourceUse(F.RuntimeConfigResourceUsage.runtime_objects),
+      combos: resourceUse(F.RuntimeConfigResourceUsage.combos),
+      macroSteps: resourceUse(F.RuntimeConfigResourceUsage.macro_steps),
+      persistedBytes: resourceUse(F.RuntimeConfigResourceUsage.persisted_bytes),
+      keymapOverrides: resourceUse(F.RuntimeConfigResourceUsage.keymap_overrides),
+      tapDanceActions: resourceUse(F.RuntimeConfigResourceUsage.tap_dance_actions),
     },
   };
 }
 
 function decodeCommit(fields) {
-  const status = fieldMsgs(fields, 4)[0];
+  const status = fieldMsgs(fields, F.CommitRuntimeUpdateResult.status)[0];
   return {
-    generation: fieldU32(fields, 1),
-    saved: !!fieldU32(fields, 2),
-    activation: fieldU32(fields, 3),
+    generation: fieldU32(fields, F.CommitRuntimeUpdateResult.generation),
+    saved: !!fieldU32(fields, F.CommitRuntimeUpdateResult.saved),
+    activation: fieldU32(fields, F.CommitRuntimeUpdateResult.activation),
     status: status ? decodeStatus(status) : null,
   };
 }
@@ -478,33 +499,43 @@ function decodeCommit(fields) {
 /** Decode the zmk.runtime_config.Response nested in zmk.studio.RequestResponse. */
 export function decodeRuntimeResponse(data) {
   const fields = data instanceof Map ? data : decodeFields(data);
-  const error = fieldMsgs(fields, 2)[0];
-  const out = { requestId: fieldU32(fields, 1) };
+  const error = fieldMsgs(fields, F.Response.error)[0];
+  const out = { requestId: fieldU32(fields, F.Response.request_id) };
   if (error) out.error = decodeError(error);
-  const capabilities = fieldMsgs(fields, 3)[0];
+  const capabilities = fieldMsgs(fields, F.Response.get_runtime_capabilities)[0];
   if (capabilities) out.capabilities = decodeCapabilities(capabilities);
-  const status = fieldMsgs(fields, 4)[0];
+  const status = fieldMsgs(fields, F.Response.get_runtime_config_status)[0];
   if (status) out.status = decodeStatus(status);
-  const config = fieldMsgs(fields, 5)[0];
+  const config = fieldMsgs(fields, F.Response.get_runtime_config)[0];
   if (config) {
-    const snapshot = fieldMsgs(config, 1)[0];
-    const configStatus = fieldMsgs(config, 2)[0];
+    const snapshot = fieldMsgs(config, F.GetRuntimeConfigResponse.snapshot)[0];
+    const configStatus = fieldMsgs(config, F.GetRuntimeConfigResponse.status)[0];
     out.config = {
       snapshot: snapshot ? decodeRuntimeSnapshot(snapshot) : null,
       status: configStatus ? decodeStatus(configStatus) : null,
     };
   }
-  const begin = fieldMsgs(fields, 6)[0];
-  if (begin) out.begin = { updateId: fieldU32(begin, 1), maxChunkBytes: fieldU32(begin, 2) };
-  const chunk = fieldMsgs(fields, 7)[0];
-  if (chunk) out.chunk = { acceptedBytes: fieldU32(chunk, 1), nextOffset: fieldU32(chunk, 2) };
-  const validation = fieldMsgs(fields, 8)[0];
+  const begin = fieldMsgs(fields, F.Response.begin_runtime_update)[0];
+  if (begin) {
+    out.begin = {
+      updateId: fieldU32(begin, F.BeginRuntimeUpdateResponse.update_id),
+      maxChunkBytes: fieldU32(begin, F.BeginRuntimeUpdateResponse.max_chunk_bytes),
+    };
+  }
+  const chunk = fieldMsgs(fields, F.Response.upload_runtime_update_chunk)[0];
+  if (chunk) {
+    out.chunk = {
+      acceptedBytes: fieldU32(chunk, F.UploadRuntimeUpdateChunkResponse.accepted_bytes),
+      nextOffset: fieldU32(chunk, F.UploadRuntimeUpdateChunkResponse.next_offset),
+    };
+  }
+  const validation = fieldMsgs(fields, F.Response.validate_runtime_update)[0];
   if (validation) out.validation = decodeValidation(validation);
-  const commit = fieldMsgs(fields, 9)[0];
+  const commit = fieldMsgs(fields, F.Response.commit_runtime_update)[0];
   if (commit) out.commit = decodeCommit(commit);
-  const abort = fieldMsgs(fields, 10)[0];
-  if (abort) out.abort = { aborted: !!fieldU32(abort, 1) };
-  const reset = fieldMsgs(fields, 11)[0];
+  const abort = fieldMsgs(fields, F.Response.abort_runtime_update)[0];
+  if (abort) out.abort = { aborted: !!fieldU32(abort, F.AbortRuntimeUpdateResponse.aborted) };
+  const reset = fieldMsgs(fields, F.Response.reset_runtime_config)[0];
   if (reset) out.reset = decodeCommit(reset);
   return out;
 }

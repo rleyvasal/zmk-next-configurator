@@ -97,6 +97,18 @@ node tests/test_combine.mjs
 node tests/test_runtime_config.mjs
 node tests/test_runtime_import.mjs
 node tests/test_runtime_document.mjs
+node tests/test_runtime_display.mjs
+```
+
+`src/connection/fields.generated.js` holds the protobuf field/enum numbers used
+by `runtime-config.js` and `studio.js`, generated from `zmk-next-messages`'
+`.proto` files (see `scripts/sync-messages.sh`). `test_fields_generated.mjs`
+checks it isn't stale, but unlike the tests above it needs `protoc`, the
+`~/zmk-venv` Python environment, and a sibling `zmk-next-messages` checkout —
+it skips cleanly (not a failure) if any of those aren't present:
+
+```bash
+node tests/test_fields_generated.mjs
 ```
 
 ## Totem

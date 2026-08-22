@@ -21,6 +21,7 @@ import {
   unzigzag32,
 } from "./pb.js";
 import { bindingToCells, rememberStudioBehaviors } from "./studio-bind.js";
+import { FIELDS } from "./fields.generated.js";
 import {
   RUNTIME_CONFIG_ERROR,
   RUNTIME_PROTOCOL_VERSION,
@@ -29,6 +30,13 @@ import {
   encodeRuntimeSnapshot,
   runtimeConfigErrorMessage,
 } from "./runtime-config.js";
+
+const Fs = FIELDS.studio;
+const Fc = FIELDS.core;
+const Fb = FIELDS.behaviors;
+const Fk = FIELDS.keymap;
+const Fm = FIELDS.meta;
+const Fr = FIELDS.runtime_config;
 
 const SOF = 0xab;
 const ESC = 0xac;
@@ -79,21 +87,21 @@ export function deframeAll(bytes, state = { mode: "idle", buf: [] }) {
 }
 
 function encodeRequest(id, subsystemField, body) {
-  return concatBytes([encodeUint32(1, id), encodeSub(subsystemField, body)]);
+  return concatBytes([encodeUint32(Fs.Request.request_id, id), encodeSub(subsystemField, body)]);
 }
 
 function encodeCore(id, typeField) {
-  return encodeRequest(id, 3, encodeBool(typeField, true));
+  return encodeRequest(id, Fs.Request.core, encodeBool(typeField, true));
 }
 
 function encodeBehaviors(id, typeField, body = new Uint8Array()) {
   const inner = body.length ? encodeSub(typeField, body) : encodeBool(typeField, true);
-  return encodeRequest(id, 4, inner);
+  return encodeRequest(id, Fs.Request.behaviors, inner);
 }
 
 function encodeKeymap(id, typeField, body = new Uint8Array()) {
   const inner = body.length ? encodeSub(typeField, body) : encodeBool(typeField, true);
-  return encodeRequest(id, 5, inner);
+  return encodeRequest(id, Fs.Request.keymap, inner);
 }
 
 function encodeRuntime(id, typeField, body = new Uint8Array()) {
@@ -101,109 +109,115 @@ function encodeRuntime(id, typeField, body = new Uint8Array()) {
   const request = body.length
     ? encodeSub(typeField, body)
     : concatBytes([encodeKey(typeField, 2), encodeVarint(0)]);
-  const inner = concatBytes([encodeUint32(1, id), request]);
-  return encodeRequest(id, 6, inner);
+  const inner = concatBytes([encodeUint32(Fr.Request.request_id, id), request]);
+  return encodeRequest(id, Fs.Request.runtime_config, inner);
 }
 
 function parseParamDesc(fields) {
-  const name = fieldStr(fields, 1);
+  const name = fieldStr(fields, Fb.BehaviorParameterValueDescription.name);
   const out = { name };
-  if (fieldMsgs(fields, 2).length) out.nil = true;
-  const constants = fieldNums(fields, 3);
+  if (fieldMsgs(fields, Fb.BehaviorParameterValueDescription.nil).length) out.nil = true;
+  const constants = fieldNums(fields, Fb.BehaviorParameterValueDescription.constant);
   if (constants.length) out.constant = constants[0];
-  if (fieldMsgs(fields, 5).length) out.hid = true;
-  if (fieldMsgs(fields, 6).length) out.layer = true;
+  if (fieldMsgs(fields, Fb.BehaviorParameterValueDescription.hid_usage).length) out.hid = true;
+  if (fieldMsgs(fields, Fb.BehaviorParameterValueDescription.layer_id).length) out.layer = true;
   return out;
 }
 
 function parseBehaviorDetails(fields) {
-  const sets = fieldMsgs(fields, 3);
+  const sets = fieldMsgs(fields, Fb.GetBehaviorDetailsResponse.metadata);
   const param1 = [];
   const param2 = [];
   for (const set of sets.length ? sets : [new Map()]) {
-    param1.push(...fieldMsgs(set, 1).map(parseParamDesc));
-    param2.push(...fieldMsgs(set, 2).map(parseParamDesc));
+    param1.push(...fieldMsgs(set, Fb.BehaviorBindingParametersSet.param1).map(parseParamDesc));
+    param2.push(...fieldMsgs(set, Fb.BehaviorBindingParametersSet.param2).map(parseParamDesc));
   }
   return {
-    id: fieldU32(fields, 1),
-    displayName: fieldStr(fields, 2),
+    id: fieldU32(fields, Fb.GetBehaviorDetailsResponse.id),
+    displayName: fieldStr(fields, Fb.GetBehaviorDetailsResponse.display_name),
     param1,
     param2,
   };
 }
 
 function parseBinding(fields) {
-  const rawId = fieldU32(fields, 1, 0);
+  const rawId = fieldU32(fields, Fk.BehaviorBinding.behavior_id, 0);
   return {
     rawBehaviorId: rawId,
     behaviorId: unzigzag32(rawId),
-    param1: fieldU32(fields, 2),
-    param2: fieldU32(fields, 3),
+    param1: fieldU32(fields, Fk.BehaviorBinding.param1),
+    param2: fieldU32(fields, Fk.BehaviorBinding.param2),
   };
 }
 
 function parseLayer(fields) {
   return {
-    id: fieldU32(fields, 1),
-    name: fieldStr(fields, 2),
-    bindings: fieldMsgs(fields, 3).map(parseBinding),
+    id: fieldU32(fields, Fk.Layer.id),
+    name: fieldStr(fields, Fk.Layer.name),
+    bindings: fieldMsgs(fields, Fk.Layer.bindings).map(parseBinding),
   };
 }
 
 function parseKeymap(fields) {
   return {
-    layers: fieldMsgs(fields, 1).map(parseLayer),
-    availableLayers: fieldU32(fields, 2),
+    layers: fieldMsgs(fields, Fk.Keymap.layers).map(parseLayer),
+    availableLayers: fieldU32(fields, Fk.Keymap.available_layers),
   };
 }
 
 function parseResponse(bytes) {
   const top = decodeFields(bytes);
-  const rr = fieldMsgs(top, 1)[0];
+  const rr = fieldMsgs(top, Fs.Response.request_response)[0];
   if (!rr) return { notification: true };
-  const requestId = fieldU32(rr, 1);
-  const meta = fieldMsgs(rr, 2)[0];
-  const core = fieldMsgs(rr, 3)[0];
-  const behaviors = fieldMsgs(rr, 4)[0];
-  const keymap = fieldMsgs(rr, 5)[0];
-  const runtimeConfig = fieldMsgs(rr, 6)[0];
+  const requestId = fieldU32(rr, Fs.RequestResponse.request_id);
+  const meta = fieldMsgs(rr, Fs.RequestResponse.meta)[0];
+  const core = fieldMsgs(rr, Fs.RequestResponse.core)[0];
+  const behaviors = fieldMsgs(rr, Fs.RequestResponse.behaviors)[0];
+  const keymap = fieldMsgs(rr, Fs.RequestResponse.keymap)[0];
+  const runtimeConfig = fieldMsgs(rr, Fs.RequestResponse.runtime_config)[0];
   const out = { requestId };
   if (meta) {
-    if (fieldU32(meta, 1)) out.noResponse = true;
-    if (fieldNums(meta, 2).length) out.error = fieldU32(meta, 2);
+    if (fieldU32(meta, Fm.Response.no_response)) out.noResponse = true;
+    if (fieldNums(meta, Fm.Response.simple_error).length) out.error = fieldU32(meta, Fm.Response.simple_error);
   }
   if (core) {
-    const info = fieldMsgs(core, 1)[0];
-    if (info) out.deviceInfo = { name: fieldStr(info, 1) };
-    if (fieldNums(core, 2).length) out.lockState = fieldU32(core, 2);
-    if (fieldU32(core, 4)) out.resetSettings = true;
+    const info = fieldMsgs(core, Fc.Response.get_device_info)[0];
+    if (info) out.deviceInfo = { name: fieldStr(info, Fc.GetDeviceInfoResponse.name) };
+    if (fieldNums(core, Fc.Response.get_lock_state).length) out.lockState = fieldU32(core, Fc.Response.get_lock_state);
+    if (fieldU32(core, Fc.Response.reset_settings)) out.resetSettings = true;
   }
   if (behaviors) {
-    const list = fieldMsgs(behaviors, 1)[0];
-    if (list) out.behaviorIds = fieldNums(list, 1);
-    const details = fieldMsgs(behaviors, 2)[0];
+    const list = fieldMsgs(behaviors, Fb.Response.list_all_behaviors)[0];
+    if (list) out.behaviorIds = fieldNums(list, Fb.ListAllBehaviorsResponse.behaviors);
+    const details = fieldMsgs(behaviors, Fb.Response.get_behavior_details)[0];
     if (details) out.behavior = parseBehaviorDetails(details);
   }
   if (keymap) {
-    const km = fieldMsgs(keymap, 1)[0];
+    const km = fieldMsgs(keymap, Fk.Response.get_keymap)[0];
     if (km) out.keymap = parseKeymap(km);
-    // SetLayerBindingResponse is a message whose `result` enum is field 1.
-    // It is not the enum directly on the keymap subsystem response. The
-    // direct numeric fallback keeps this parser tolerant of old/nonstandard
-    // firmware that flattened the response.
-    const setBinding = fieldMsgs(keymap, 2)[0];
+    // SetLayerBindingResponse is on the wire as the plain enum (varint), per
+    // the current .proto. The message-shaped probe below has no schema
+    // backing it — it's tolerance for older/nonstandard firmware that may
+    // have flattened the response into a submessage; field 1 there isn't a
+    // generated constant because no such message exists in the contract.
+    const setBinding = fieldMsgs(keymap, Fk.Response.set_layer_binding)[0];
     if (setBinding) out.setLayerBinding = fieldU32(setBinding, 1);
-    else if (fieldNums(keymap, 2).length) out.setLayerBinding = fieldU32(keymap, 2);
-    const save = fieldMsgs(keymap, 4)[0];
+    else if (fieldNums(keymap, Fk.Response.set_layer_binding).length) {
+      out.setLayerBinding = fieldU32(keymap, Fk.Response.set_layer_binding);
+    }
+    const save = fieldMsgs(keymap, Fk.Response.save_changes)[0];
     if (save) {
-      out.saveOk = fieldU32(save, 1) === 1 || fieldMsgs(save, 1).length > 0 || fieldU32(save, 1) > 0;
-      if (fieldNums(save, 1).length) out.saveOk = !!fieldU32(save, 1);
-      if (fieldNums(save, 2).length) {
+      out.saveOk =
+        fieldU32(save, Fk.SaveChangesResponse.ok) === 1 ||
+        fieldMsgs(save, Fk.SaveChangesResponse.ok).length > 0 ||
+        fieldU32(save, Fk.SaveChangesResponse.ok) > 0;
+      if (fieldNums(save, Fk.SaveChangesResponse.ok).length) out.saveOk = !!fieldU32(save, Fk.SaveChangesResponse.ok);
+      if (fieldNums(save, Fk.SaveChangesResponse.err).length) {
         out.saveOk = false;
-        out.saveErr = fieldU32(save, 2);
+        out.saveErr = fieldU32(save, Fk.SaveChangesResponse.err);
       }
     }
-    if (fieldU32(keymap, 4) && !save) out.saveOk = true;
+    if (fieldU32(keymap, Fk.Response.save_changes) && !save) out.saveOk = true;
   }
   if (runtimeConfig) out.runtimeConfig = decodeRuntimeResponse(runtimeConfig);
   return out;
@@ -304,18 +318,18 @@ export class StudioClient {
   }
 
   async handshake() {
-    const info = await this.call((id) => encodeCore(id, 1));
+    const info = await this.call((id) => encodeCore(id, Fc.Request.get_device_info));
     this.deviceName = info.deviceInfo?.name || "Totem";
-    const lock = await this.call((id) => encodeCore(id, 2));
+    const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
     if (lock.lockState === 0) {
       throw new Error("Studio is locked. This image should be unlocked; try unplugging USB and reconnecting.");
     }
-    const listed = await this.call((id) => encodeBehaviors(id, 1));
+    const listed = await this.call((id) => encodeBehaviors(id, Fb.Request.list_all_behaviors));
     const ids = listed.behaviorIds || [];
     const behaviors = [];
     for (const behaviorId of ids) {
       const details = await this.call((id) =>
-        encodeBehaviors(id, 2, encodeUint32(1, behaviorId))
+        encodeBehaviors(id, Fb.Request.get_behavior_details, encodeUint32(Fb.GetBehaviorDetailsRequest.behavior_id, behaviorId))
       );
       if (details.behavior) behaviors.push(details.behavior);
     }
@@ -326,7 +340,7 @@ export class StudioClient {
   }
 
   async getKeymap() {
-    const km = await this.call((id) => encodeKeymap(id, 1), 10000);
+    const km = await this.call((id) => encodeKeymap(id, Fk.Request.get_keymap), 10000);
     this.layers = km.keymap?.layers || [];
     this.inferredBehaviors = rememberStudioBehaviors(this.behaviors, this.layers);
     return this.layers;
@@ -338,18 +352,18 @@ export class StudioClient {
     const mapped = bindingToCells(text, this.behaviors, layers);
     if (!mapped.ok) return mapped;
     const body = concatBytes([
-      encodeUint32(1, layer.id),
-      encodeInt32(2, keyPosition),
+      encodeUint32(Fk.SetLayerBindingRequest.layer_id, layer.id),
+      encodeInt32(Fk.SetLayerBindingRequest.key_position, keyPosition),
       encodeSub(
-        3,
+        Fk.SetLayerBindingRequest.binding,
         concatBytes([
-          encodeSint32(1, mapped.binding.behaviorId),
-          encodeUint32(2, mapped.binding.param1),
-          encodeUint32(3, mapped.binding.param2),
+          encodeSint32(Fk.BehaviorBinding.behavior_id, mapped.binding.behaviorId),
+          encodeUint32(Fk.BehaviorBinding.param1, mapped.binding.param1),
+          encodeUint32(Fk.BehaviorBinding.param2, mapped.binding.param2),
         ])
       ),
     ]);
-    const resp = await this.call((id) => encodeKeymap(id, 2, body));
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.set_layer_binding, body));
     if (resp.setLayerBinding && resp.setLayerBinding !== 0) {
       const why = ["ok", "invalid location", "invalid behavior", "invalid parameters"][resp.setLayerBinding] || String(resp.setLayerBinding);
       return { ok: false, reason: why };
@@ -358,13 +372,13 @@ export class StudioClient {
   }
 
   async save() {
-    const resp = await this.call((id) => encodeKeymap(id, 4));
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.save_changes));
     if (resp.saveErr) throw new Error(`Studio save failed (${resp.saveErr})`);
     return true;
   }
 
   async getRuntimeCapabilities({ timeoutMs = 10000 } = {}) {
-    const resp = await this.call((id) => encodeRuntime(id, 2), timeoutMs);
+    const resp = await this.call((id) => encodeRuntime(id, Fr.Request.get_runtime_capabilities), timeoutMs);
     const capabilities = resp.runtimeConfig?.capabilities;
     if (!capabilities) throw new Error("Keyboard did not return Runtime Config capabilities");
     if (capabilities.protocolVersion !== RUNTIME_PROTOCOL_VERSION) {
@@ -377,7 +391,7 @@ export class StudioClient {
   }
 
   async getRuntimeConfigStatus({ timeoutMs = 10000 } = {}) {
-    const resp = await this.call((id) => encodeRuntime(id, 3), timeoutMs);
+    const resp = await this.call((id) => encodeRuntime(id, Fr.Request.get_runtime_config_status), timeoutMs);
     const status = resp.runtimeConfig?.status;
     if (!status) throw new Error("Keyboard did not return Runtime Config status");
     this.runtimeStatus = status;
@@ -385,7 +399,7 @@ export class StudioClient {
   }
 
   async getRuntimeConfig({ timeoutMs = 10000 } = {}) {
-    const resp = await this.call((id) => encodeRuntime(id, 4), timeoutMs);
+    const resp = await this.call((id) => encodeRuntime(id, Fr.Request.get_runtime_config), timeoutMs);
     const config = resp.runtimeConfig?.config;
     if (!config?.snapshot || !config.status) {
       throw new Error("Keyboard did not return a Runtime Config snapshot");
@@ -397,7 +411,15 @@ export class StudioClient {
 
   async abortRuntimeUpdate(updateId = this.lastRuntimeUpdateId) {
     try {
-      await this.call((id) => encodeRuntime(id, 9, encodeUint32(1, updateId || 0)), 1500);
+      await this.call(
+        (id) =>
+          encodeRuntime(
+            id,
+            Fr.Request.abort_runtime_update,
+            encodeUint32(Fr.AbortRuntimeUpdateRequest.update_id, updateId || 0)
+          ),
+        1500
+      );
     } catch {
       return false;
     }
@@ -471,10 +493,10 @@ export class StudioClient {
         (id) =>
           encodeRuntime(
             id,
-            5,
+            Fr.Request.begin_runtime_update,
             concatBytes([
-              encodeUint32(1, expected),
-              encodeUint32(2, bytes.length),
+              encodeUint32(Fr.BeginRuntimeUpdateRequest.expected_active_generation, expected),
+              encodeUint32(Fr.BeginRuntimeUpdateRequest.snapshot_size, bytes.length),
             ])
           ),
         20000,
@@ -498,11 +520,11 @@ export class StudioClient {
           (id) =>
             encodeRuntime(
               id,
-              6,
+              Fr.Request.upload_runtime_update_chunk,
               concatBytes([
-                encodeUint32(1, updateId),
-                encodeUint32(2, offset),
-                encodeBytes(3, chunk),
+                encodeUint32(Fr.UploadRuntimeUpdateChunkRequest.update_id, updateId),
+                encodeUint32(Fr.UploadRuntimeUpdateChunkRequest.offset, offset),
+                encodeBytes(Fr.UploadRuntimeUpdateChunkRequest.chunk, chunk),
               ])
             ),
           15000,
@@ -518,7 +540,7 @@ export class StudioClient {
       step = "validate";
       progress("Validating Runtime Config snapshot…");
       const validationResponse = await this.call(
-        (id) => encodeRuntime(id, 7, encodeUint32(1, updateId)),
+        (id) => encodeRuntime(id, Fr.Request.validate_runtime_update, encodeUint32(Fr.ValidateRuntimeUpdateRequest.update_id, updateId)),
         30000,
         applyTimeout("validate")
       );
@@ -537,7 +559,7 @@ export class StudioClient {
       progress("Saving Runtime Config to keyboard flash. Keep USB connected…");
       commitSent = true;
       const commitResponse = await this.call(
-        (id) => encodeRuntime(id, 8, encodeUint32(1, updateId)),
+        (id) => encodeRuntime(id, Fr.Request.commit_runtime_update, encodeUint32(Fr.CommitRuntimeUpdateRequest.update_id, updateId)),
         60000,
         applyTimeout("save")
       );
@@ -582,7 +604,7 @@ export class StudioClient {
   async resetRuntimeConfig({ expectedActiveGeneration } = {}) {
     const expected = expectedActiveGeneration ?? this.runtimeStatus?.activeGeneration ?? 0;
     const response = await this.call(
-      (id) => encodeRuntime(id, 10, encodeUint32(1, expected)),
+      (id) => encodeRuntime(id, Fr.Request.reset_runtime_config, encodeUint32(Fr.ResetRuntimeConfigRequest.expected_active_generation, expected)),
       10000
     );
     const reset = response.runtimeConfig?.reset;
@@ -648,18 +670,18 @@ export async function connectStudio() {
 
 export function encodeSetLayerBindingForTest(requestId, layerId, keyPosition, binding) {
   const body = concatBytes([
-    encodeUint32(1, layerId),
-    encodeInt32(2, keyPosition),
+    encodeUint32(Fk.SetLayerBindingRequest.layer_id, layerId),
+    encodeInt32(Fk.SetLayerBindingRequest.key_position, keyPosition),
     encodeSub(
-      3,
+      Fk.SetLayerBindingRequest.binding,
       concatBytes([
-        encodeSint32(1, binding.behaviorId),
-        encodeUint32(2, binding.param1),
-        encodeUint32(3, binding.param2),
+        encodeSint32(Fk.BehaviorBinding.behavior_id, binding.behaviorId),
+        encodeUint32(Fk.BehaviorBinding.param1, binding.param1),
+        encodeUint32(Fk.BehaviorBinding.param2, binding.param2),
       ])
     ),
   ]);
-  return encodeKeymap(requestId, 2, body);
+  return encodeKeymap(requestId, Fk.Request.set_layer_binding, body);
 }
 
 export function encodeRuntimeRequestForTest(requestId, typeField, body = new Uint8Array()) {

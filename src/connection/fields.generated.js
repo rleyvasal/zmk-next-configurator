@@ -1,0 +1,565 @@
+// GENERATED FILE -- do not edit by hand.
+// Produced by zmk-next-messages/tools/gen_js_fields.py from proto/zmk/*.proto.
+// Regenerate with zmk-next-configurator/scripts/sync-messages.sh.
+// Source: zmk-next-messages @ b97e5aac3e235d77455636ee5959e56385ddb6d5
+
+export const FIELDS = Object.freeze({
+  "meta": Object.freeze({
+    "Response": Object.freeze({
+      "no_response": 1,
+      "simple_error": 2,
+    }),
+  }),
+  "core": Object.freeze({
+    "Request": Object.freeze({
+      "get_device_info": 1,
+      "get_lock_state": 2,
+      "lock": 3,
+      "reset_settings": 4,
+    }),
+    "Response": Object.freeze({
+      "get_device_info": 1,
+      "get_lock_state": 2,
+      "reset_settings": 4,
+    }),
+    "GetDeviceInfoResponse": Object.freeze({
+      "name": 1,
+      "serial_number": 2,
+    }),
+    "Notification": Object.freeze({
+      "lock_state_changed": 1,
+    }),
+  }),
+  "behaviors": Object.freeze({
+    "Request": Object.freeze({
+      "list_all_behaviors": 1,
+      "get_behavior_details": 2,
+    }),
+    "GetBehaviorDetailsRequest": Object.freeze({
+      "behavior_id": 1,
+    }),
+    "Response": Object.freeze({
+      "list_all_behaviors": 1,
+      "get_behavior_details": 2,
+    }),
+    "ListAllBehaviorsResponse": Object.freeze({
+      "behaviors": 1,
+    }),
+    "GetBehaviorDetailsResponse": Object.freeze({
+      "id": 1,
+      "display_name": 2,
+      "metadata": 3,
+    }),
+    "BehaviorBindingParametersSet": Object.freeze({
+      "param1": 1,
+      "param2": 2,
+    }),
+    "BehaviorParameterValueDescriptionRange": Object.freeze({
+      "min": 1,
+      "max": 2,
+    }),
+    "BehaviorParameterNil": Object.freeze({}),
+    "BehaviorParameterLayerId": Object.freeze({}),
+    "BehaviorParameterHidUsage": Object.freeze({
+      "keyboard_max": 1,
+      "consumer_max": 2,
+    }),
+    "BehaviorParameterValueDescription": Object.freeze({
+      "name": 1,
+      "nil": 2,
+      "constant": 3,
+      "range": 4,
+      "hid_usage": 5,
+      "layer_id": 6,
+    }),
+  }),
+  "keymap": Object.freeze({
+    "Request": Object.freeze({
+      "get_keymap": 1,
+      "set_layer_binding": 2,
+      "check_unsaved_changes": 3,
+      "save_changes": 4,
+      "discard_changes": 5,
+      "get_physical_layouts": 6,
+      "set_active_physical_layout": 7,
+      "move_layer": 8,
+      "add_layer": 9,
+      "remove_layer": 10,
+      "restore_layer": 11,
+      "set_layer_props": 12,
+    }),
+    "Response": Object.freeze({
+      "get_keymap": 1,
+      "set_layer_binding": 2,
+      "check_unsaved_changes": 3,
+      "save_changes": 4,
+      "discard_changes": 5,
+      "get_physical_layouts": 6,
+      "set_active_physical_layout": 7,
+      "move_layer": 8,
+      "add_layer": 9,
+      "remove_layer": 10,
+      "restore_layer": 11,
+      "set_layer_props": 12,
+    }),
+    "Notification": Object.freeze({
+      "unsaved_changes_status_changed": 1,
+    }),
+    "SaveChangesResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "SetActivePhysicalLayoutResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "MoveLayerResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "AddLayerResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "AddLayerResponseDetails": Object.freeze({
+      "index": 1,
+      "layer": 2,
+    }),
+    "RemoveLayerResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "RemoveLayerOk": Object.freeze({}),
+    "RestoreLayerResponse": Object.freeze({
+      "ok": 1,
+      "err": 2,
+    }),
+    "SetLayerBindingRequest": Object.freeze({
+      "layer_id": 1,
+      "key_position": 2,
+      "binding": 3,
+    }),
+    "MoveLayerRequest": Object.freeze({
+      "start_index": 1,
+      "dest_index": 2,
+    }),
+    "AddLayerRequest": Object.freeze({}),
+    "RemoveLayerRequest": Object.freeze({
+      "layer_index": 1,
+    }),
+    "RestoreLayerRequest": Object.freeze({
+      "layer_id": 1,
+      "at_index": 2,
+    }),
+    "SetLayerPropsRequest": Object.freeze({
+      "layer_id": 1,
+      "name": 2,
+    }),
+    "Keymap": Object.freeze({
+      "layers": 1,
+      "available_layers": 2,
+      "max_layer_name_length": 3,
+    }),
+    "Layer": Object.freeze({
+      "id": 1,
+      "name": 2,
+      "bindings": 3,
+    }),
+    "BehaviorBinding": Object.freeze({
+      "behavior_id": 1,
+      "param1": 2,
+      "param2": 3,
+    }),
+    "PhysicalLayouts": Object.freeze({
+      "active_layout_index": 1,
+      "layouts": 2,
+    }),
+    "PhysicalLayout": Object.freeze({
+      "name": 1,
+      "keys": 2,
+    }),
+    "KeyPhysicalAttrs": Object.freeze({
+      "width": 1,
+      "height": 2,
+      "x": 3,
+      "y": 4,
+      "r": 5,
+      "rx": 6,
+      "ry": 7,
+    }),
+  }),
+  "runtime_config": Object.freeze({
+    "Request": Object.freeze({
+      "request_id": 1,
+      "get_runtime_capabilities": 2,
+      "get_runtime_config_status": 3,
+      "get_runtime_config": 4,
+      "begin_runtime_update": 5,
+      "upload_runtime_update_chunk": 6,
+      "validate_runtime_update": 7,
+      "commit_runtime_update": 8,
+      "abort_runtime_update": 9,
+      "reset_runtime_config": 10,
+    }),
+    "Response": Object.freeze({
+      "request_id": 1,
+      "error": 2,
+      "get_runtime_capabilities": 3,
+      "get_runtime_config_status": 4,
+      "get_runtime_config": 5,
+      "begin_runtime_update": 6,
+      "upload_runtime_update_chunk": 7,
+      "validate_runtime_update": 8,
+      "commit_runtime_update": 9,
+      "abort_runtime_update": 10,
+      "reset_runtime_config": 11,
+    }),
+    "GetRuntimeCapabilitiesRequest": Object.freeze({}),
+    "GetRuntimeConfigStatusRequest": Object.freeze({}),
+    "GetRuntimeConfigRequest": Object.freeze({}),
+    "GetRuntimeConfigResponse": Object.freeze({
+      "snapshot": 1,
+      "status": 2,
+    }),
+    "BeginRuntimeUpdateRequest": Object.freeze({
+      "expected_active_generation": 1,
+      "snapshot_size": 2,
+      "snapshot_sha256": 3,
+    }),
+    "BeginRuntimeUpdateResponse": Object.freeze({
+      "update_id": 1,
+      "max_chunk_bytes": 2,
+    }),
+    "UploadRuntimeUpdateChunkRequest": Object.freeze({
+      "update_id": 1,
+      "offset": 2,
+      "chunk": 3,
+    }),
+    "UploadRuntimeUpdateChunkResponse": Object.freeze({
+      "accepted_bytes": 1,
+      "next_offset": 2,
+    }),
+    "ValidateRuntimeUpdateRequest": Object.freeze({
+      "update_id": 1,
+    }),
+    "CommitRuntimeUpdateRequest": Object.freeze({
+      "update_id": 1,
+    }),
+    "CommitRuntimeUpdateResult": Object.freeze({
+      "generation": 1,
+      "saved": 2,
+      "activation": 3,
+      "status": 4,
+    }),
+    "AbortRuntimeUpdateRequest": Object.freeze({
+      "update_id": 1,
+    }),
+    "AbortRuntimeUpdateResponse": Object.freeze({
+      "aborted": 1,
+    }),
+    "ResetRuntimeConfigRequest": Object.freeze({
+      "expected_active_generation": 1,
+    }),
+    "RuntimeCapabilities": Object.freeze({
+      "protocol_version": 1,
+      "persistence_schema_version": 2,
+      "capability_fingerprint": 3,
+      "supported_object_types": 4,
+      "supported_features": 5,
+      "limits": 6,
+      "compiled_behaviors": 7,
+      "selected_position_count": 8,
+      "selected_to_stock_positions": 9,
+    }),
+    "RuntimeConfigLimits": Object.freeze({
+      "max_runtime_objects": 1,
+      "max_combos": 2,
+      "max_combo_keys": 3,
+      "max_macro_steps": 4,
+      "max_persisted_bytes": 5,
+      "max_layers": 6,
+      "max_keymap_overrides": 7,
+      "max_tap_dance_actions": 8,
+    }),
+    "CompiledBehaviorCapability": Object.freeze({
+      "behavior_id": 1,
+      "display_name": 2,
+      "parameter_count": 3,
+    }),
+    "RuntimeConfigSnapshot": Object.freeze({
+      "persistence_schema_version": 1,
+      "generation": 2,
+      "capability_fingerprint": 3,
+      "keymap_overrides": 4,
+      "layers": 5,
+      "runtime_objects": 6,
+      "combos": 7,
+    }),
+    "KeymapOverride": Object.freeze({
+      "layer_id": 1,
+      "key_position": 2,
+      "action": 3,
+    }),
+    "LayerMetadata": Object.freeze({
+      "layer_id": 1,
+      "name": 2,
+      "order": 3,
+    }),
+    "ActionReference": Object.freeze({
+      "compiled_behavior": 1,
+      "runtime_object_id": 2,
+    }),
+    "CompiledBehaviorAction": Object.freeze({
+      "behavior_id": 1,
+      "param1": 2,
+      "param2": 3,
+    }),
+    "RuntimeObject": Object.freeze({
+      "id": 1,
+      "mod_morph": 2,
+      "macro": 3,
+      "hold_tap": 4,
+      "tap_dance": 5,
+    }),
+    "ModMorphObject": Object.freeze({
+      "modifiers": 1,
+      "normal_action": 2,
+      "morphed_action": 3,
+    }),
+    "MacroObject": Object.freeze({
+      "steps": 1,
+    }),
+    "MacroStep": Object.freeze({
+      "tap": 1,
+      "press": 2,
+      "release": 3,
+      "wait_ms": 4,
+      "pause_until_release": 5,
+    }),
+    "HoldTapObject": Object.freeze({
+      "tap_action": 1,
+      "hold_action": 2,
+      "flavor": 3,
+      "tapping_term_ms": 4,
+      "quick_tap_ms": 5,
+      "require_prior_idle_ms": 6,
+    }),
+    "TapDanceObject": Object.freeze({
+      "actions": 1,
+      "tapping_term_ms": 2,
+    }),
+    "TapDanceAction": Object.freeze({
+      "tap_count": 1,
+      "tap_action": 2,
+      "hold_action": 3,
+    }),
+    "ComboDefinition": Object.freeze({
+      "id": 1,
+      "key_positions": 2,
+      "timeout_ms": 3,
+      "output": 4,
+      "slow_release": 5,
+      "require_prior_idle_ms": 6,
+      "layer_mask": 7,
+    }),
+    "RuntimeConfigStatus": Object.freeze({
+      "state": 1,
+      "active_generation": 2,
+      "pending_generation": 3,
+      "last_error": 4,
+    }),
+    "RuntimeConfigError": Object.freeze({
+      "code": 1,
+      "message": 2,
+      "diagnostics": 3,
+    }),
+    "KeyLocation": Object.freeze({
+      "layer_id": 1,
+      "key_position": 2,
+    }),
+    "RuntimeConfigDiagnostic": Object.freeze({
+      "severity": 1,
+      "code": 2,
+      "message": 3,
+      "runtime_object_id": 4,
+      "combo_id": 5,
+      "key_location": 6,
+      "field_path": 7,
+    }),
+    "ValidationResult": Object.freeze({
+      "valid": 1,
+      "errors": 2,
+      "warnings": 3,
+      "resource_usage": 4,
+    }),
+    "ResourceUse": Object.freeze({
+      "used": 1,
+      "limit": 2,
+    }),
+    "RuntimeConfigResourceUsage": Object.freeze({
+      "runtime_objects": 1,
+      "combos": 2,
+      "macro_steps": 3,
+      "persisted_bytes": 4,
+      "keymap_overrides": 5,
+      "tap_dance_actions": 6,
+    }),
+  }),
+  "studio": Object.freeze({
+    "Request": Object.freeze({
+      "request_id": 1,
+      "core": 3,
+      "behaviors": 4,
+      "keymap": 5,
+      "runtime_config": 6,
+    }),
+    "Response": Object.freeze({
+      "request_response": 1,
+      "notification": 2,
+    }),
+    "RequestResponse": Object.freeze({
+      "request_id": 1,
+      "meta": 2,
+      "core": 3,
+      "behaviors": 4,
+      "keymap": 5,
+      "runtime_config": 6,
+    }),
+    "Notification": Object.freeze({
+      "core": 2,
+      "keymap": 5,
+    }),
+  }),
+});
+
+export const ENUMS = Object.freeze({
+  "meta": Object.freeze({
+    "ErrorConditions": Object.freeze({
+      "GENERIC": 0,
+      "UNLOCK_REQUIRED": 1,
+      "RPC_NOT_FOUND": 2,
+      "MSG_DECODE_FAILED": 3,
+      "MSG_ENCODE_FAILED": 4,
+    }),
+  }),
+  "core": Object.freeze({
+    "LockState": Object.freeze({
+      "ZMK_STUDIO_CORE_LOCK_STATE_LOCKED": 0,
+      "ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED": 1,
+    }),
+  }),
+  "keymap": Object.freeze({
+    "SaveChangesErrorCode": Object.freeze({
+      "SAVE_CHANGES_ERR_OK": 0,
+      "SAVE_CHANGES_ERR_GENERIC": 1,
+      "SAVE_CHANGES_ERR_NOT_SUPPORTED": 2,
+      "SAVE_CHANGES_ERR_NO_SPACE": 3,
+    }),
+    "SetLayerBindingResponse": Object.freeze({
+      "SET_LAYER_BINDING_RESP_OK": 0,
+      "SET_LAYER_BINDING_RESP_INVALID_LOCATION": 1,
+      "SET_LAYER_BINDING_RESP_INVALID_BEHAVIOR": 2,
+      "SET_LAYER_BINDING_RESP_INVALID_PARAMETERS": 3,
+    }),
+    "MoveLayerErrorCode": Object.freeze({
+      "MOVE_LAYER_ERR_OK": 0,
+      "MOVE_LAYER_ERR_GENERIC": 1,
+      "MOVE_LAYER_ERR_INVALID_LAYER": 2,
+      "MOVE_LAYER_ERR_INVALID_DESTINATION": 3,
+    }),
+    "AddLayerErrorCode": Object.freeze({
+      "ADD_LAYER_ERR_OK": 0,
+      "ADD_LAYER_ERR_GENERIC": 1,
+      "ADD_LAYER_ERR_NO_SPACE": 2,
+    }),
+    "RemoveLayerErrorCode": Object.freeze({
+      "REMOVE_LAYER_ERR_OK": 0,
+      "REMOVE_LAYER_ERR_GENERIC": 1,
+      "REMOVE_LAYER_ERR_INVALID_INDEX": 2,
+    }),
+    "RestoreLayerErrorCode": Object.freeze({
+      "RESTORE_LAYER_ERR_OK": 0,
+      "RESTORE_LAYER_ERR_GENERIC": 1,
+      "RESTORE_LAYER_ERR_INVALID_ID": 2,
+      "RESTORE_LAYER_ERR_INVALID_INDEX": 3,
+    }),
+    "SetLayerPropsResponse": Object.freeze({
+      "SET_LAYER_PROPS_RESP_OK": 0,
+      "SET_LAYER_PROPS_RESP_ERR_GENERIC": 1,
+      "SET_LAYER_PROPS_RESP_ERR_INVALID_ID": 2,
+    }),
+    "SetActivePhysicalLayoutErrorCode": Object.freeze({
+      "SET_ACTIVE_PHYSICAL_LAYOUT_ERR_OK": 0,
+      "SET_ACTIVE_PHYSICAL_LAYOUT_ERR_GENERIC": 1,
+      "SET_ACTIVE_PHYSICAL_LAYOUT_ERR_INVALID_LAYOUT_INDEX": 2,
+    }),
+  }),
+  "runtime_config": Object.freeze({
+    "RuntimeObjectType": Object.freeze({
+      "RUNTIME_OBJECT_TYPE_UNSPECIFIED": 0,
+      "RUNTIME_OBJECT_TYPE_MOD_MORPH": 1,
+      "RUNTIME_OBJECT_TYPE_MACRO": 2,
+      "RUNTIME_OBJECT_TYPE_HOLD_TAP": 3,
+      "RUNTIME_OBJECT_TYPE_TAP_DANCE": 4,
+    }),
+    "RuntimeFeature": Object.freeze({
+      "RUNTIME_FEATURE_UNSPECIFIED": 0,
+      "RUNTIME_FEATURE_KEYMAP_OVERRIDES": 1,
+      "RUNTIME_FEATURE_LAYER_METADATA": 2,
+      "RUNTIME_FEATURE_COMBOS": 3,
+      "RUNTIME_FEATURE_MOD_MORPHS": 4,
+      "RUNTIME_FEATURE_MACROS": 5,
+      "RUNTIME_FEATURE_HOLD_TAPS": 6,
+      "RUNTIME_FEATURE_TAP_DANCES": 7,
+      "RUNTIME_FEATURE_MACRO_WAIT": 8,
+      "RUNTIME_FEATURE_MACRO_PAUSE_UNTIL_RELEASE": 9,
+      "RUNTIME_FEATURE_COMBO_SLOW_RELEASE": 10,
+      "RUNTIME_FEATURE_COMBO_REQUIRE_PRIOR_IDLE": 11,
+      "RUNTIME_FEATURE_HOLD_TAP_QUICK_TAP": 12,
+      "RUNTIME_FEATURE_HOLD_TAP_REQUIRE_PRIOR_IDLE": 13,
+    }),
+    "HoldTapFlavor": Object.freeze({
+      "HOLD_TAP_FLAVOR_UNSPECIFIED": 0,
+      "HOLD_TAP_FLAVOR_HOLD_PREFERRED": 1,
+      "HOLD_TAP_FLAVOR_BALANCED": 2,
+      "HOLD_TAP_FLAVOR_TAP_PREFERRED": 3,
+      "HOLD_TAP_FLAVOR_TAP_UNLESS_INTERRUPTED": 4,
+    }),
+    "RuntimeConfigState": Object.freeze({
+      "RUNTIME_CONFIG_STATE_UNSPECIFIED": 0,
+      "RUNTIME_CONFIG_STATE_ACTIVE": 1,
+      "RUNTIME_CONFIG_STATE_STAGING": 2,
+      "RUNTIME_CONFIG_STATE_VALIDATED": 3,
+      "RUNTIME_CONFIG_STATE_PERSISTED_PENDING_IDLE": 4,
+      "RUNTIME_CONFIG_STATE_FAILED": 5,
+    }),
+    "RuntimeConfigActivation": Object.freeze({
+      "RUNTIME_CONFIG_ACTIVATION_UNSPECIFIED": 0,
+      "RUNTIME_CONFIG_ACTIVATION_ACTIVE": 1,
+      "RUNTIME_CONFIG_ACTIVATION_PENDING_IDLE": 2,
+    }),
+    "RuntimeConfigErrorCode": Object.freeze({
+      "RUNTIME_CONFIG_ERROR_OK": 0,
+      "RUNTIME_CONFIG_ERROR_INVALID_REQUEST": 1,
+      "RUNTIME_CONFIG_ERROR_PROTOCOL_VERSION": 2,
+      "RUNTIME_CONFIG_ERROR_SNAPSHOT_SCHEMA_VERSION": 3,
+      "RUNTIME_CONFIG_ERROR_CAPABILITY_FINGERPRINT": 4,
+      "RUNTIME_CONFIG_ERROR_STALE_GENERATION": 5,
+      "RUNTIME_CONFIG_ERROR_UPDATE_NOT_FOUND": 6,
+      "RUNTIME_CONFIG_ERROR_UPDATE_IN_PROGRESS": 7,
+      "RUNTIME_CONFIG_ERROR_UPDATE_INCOMPLETE": 8,
+      "RUNTIME_CONFIG_ERROR_INVALID_CHUNK": 9,
+      "RUNTIME_CONFIG_ERROR_VALIDATION": 10,
+      "RUNTIME_CONFIG_ERROR_RESOURCE_LIMIT": 11,
+      "RUNTIME_CONFIG_ERROR_PERSISTENCE": 12,
+      "RUNTIME_CONFIG_ERROR_ACTIVATION": 13,
+      "RUNTIME_CONFIG_ERROR_NOT_SUPPORTED": 14,
+      "RUNTIME_CONFIG_ERROR_INTERNAL": 15,
+    }),
+    "RuntimeConfigDiagnosticSeverity": Object.freeze({
+      "RUNTIME_CONFIG_DIAGNOSTIC_SEVERITY_UNSPECIFIED": 0,
+      "RUNTIME_CONFIG_DIAGNOSTIC_SEVERITY_ERROR": 1,
+      "RUNTIME_CONFIG_DIAGNOSTIC_SEVERITY_WARNING": 2,
+    }),
+  }),
+});
