@@ -111,6 +111,11 @@ it skips cleanly (not a failure) if any of those aren't present:
 node tests/test_fields_generated.mjs
 ```
 
+CI runs the same check for real (not just skipped) if a `MESSAGES_REPO_TOKEN`
+repo secret is set — a fine-grained PAT scoped to read-only `Contents` on
+`zmk-next-messages` only. Without it, CI just skips this one test like a local
+run with no sibling checkout.
+
 ## Totem
 
 `layouts/totem.json` + `examples/totem.keymap` are the first-class profile. The firmware repo `totem-zmk-config` still owns the production keymap; open that file here after you edit.
