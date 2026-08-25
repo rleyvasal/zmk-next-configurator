@@ -283,6 +283,18 @@ async function pumpLayerLive() {
             });
             break;
           }
+          // removeLayer() shifts every later device layer index down by one -
+          // adjust the pre-computed neutralized positions to match before
+          // pushing them, or they'd land on the wrong (now-shifted) layer.
+          for (const n of job.neutralized || []) {
+            const idx = n.studioLayerIdx > job.studioIdx ? n.studioLayerIdx - 1 : n.studioLayerIdx;
+            const layer = state.studio.layers[idx];
+            if (!layer) continue;
+            const write = await state.studio.setBinding(idx, n.index, "&trans", studioEncodeLayers());
+            if (!write.ok) {
+              setStatus(`${job.name} removed, but couldn't clear a dangling reference to it (${write.reason}).`);
+            }
+          }
           await state.studio.save();
           renderLayers();
           updateFlashBanner();
@@ -701,6 +713,15 @@ function deleteLayer(index) {
     deleted: c.deleted,
   }));
   const studioIdx = studioLayerIndex(index);
+  // Map each neutralized (now-&trans) key to its device-side layer index
+  // before the deletion shifts local layer indices around, so the live
+  // "remove" job can push the same &trans rewrite to the device that
+  // layerHost.neutralizeToken already applied locally - otherwise the
+  // device keeps a dangling &lt/&mo/&to/&tog reference to a layer that no
+  // longer exists there, while the editor thinks it's already &trans.
+  const neutralizedLive = neutralized
+    .map((n) => ({ studioLayerIdx: studioLayerIndex(n.layer), index: n.index }))
+    .filter((n) => n.studioLayerIdx != null);
   runHistory(
     new DeleteLayerCommand(layerHost, {
       index,
@@ -716,7 +737,7 @@ function deleteLayer(index) {
           line: "The board's default layer can't be removed live. Download the keymap and flash to remove it.",
         });
       } else if (state.studio && studioIdx != null) {
-        queueLiveLayerOp({ kind: "remove", studioIdx, name });
+        queueLiveLayerOp({ kind: "remove", studioIdx, name, neutralized: neutralizedLive });
       } else {
         showFlashNeeded("layer-delete", name);
       }
