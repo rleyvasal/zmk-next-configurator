@@ -195,6 +195,10 @@ const state = {
   loadedBindings: new Map(),
 };
 
+// Debug hook - inspect live state.studio.layers / state.layers from devtools
+// while diagnosing the layer-matching issue.
+window.__zmkDebugState = state;
+
 const liveQueue = [];
 let liveBusy = false;
 let runtimeIdleWatch = 0;
@@ -220,6 +224,7 @@ async function pumpLayerLive() {
     try {
       switch (job.kind) {
         case "add": {
+          console.log("[layer-live add] availableLayers before:", state.studio.availableLayers, "job:", job);
           if ((state.studio.availableLayers ?? 1) <= 0) {
             showFlashNeeded("layer", job.name, {
               line: "This keyboard has no free layer slot — add reserved layers in firmware for headroom.",
@@ -227,6 +232,7 @@ async function pumpLayerLive() {
             break;
           }
           const added = await state.studio.addLayer();
+          console.log("[layer-live add] addLayer() result:", added, "layers after:", JSON.stringify(state.studio.layers));
           if (!added.ok) {
             showFlashNeeded("layer", job.name, {
               line:
@@ -236,7 +242,8 @@ async function pumpLayerLive() {
             });
             break;
           }
-          await state.studio.setLayerProps(added.layerId, job.name);
+          const propsResult = await state.studio.setLayerProps(added.layerId, job.name);
+          console.log("[layer-live add] setLayerProps() result:", propsResult, "layers after:", JSON.stringify(state.studio.layers));
           await state.studio.save();
           renderLayers();
           updateFlashBanner();
