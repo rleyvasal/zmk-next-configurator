@@ -317,7 +317,7 @@ export class StudioClient {
     const info = await this.call(
       (id) => encodeCore(id, Fc.Request.get_device_info),
       1500,
-      "This is the console/logging port, not the Studio RPC port. Reconnect and pick the other USB serial port."
+      "This USB serial port didn't answer the Studio RPC handshake. If the keyboard exposes more than one serial port, reconnect and pick a different one."
     );
     this.deviceName = info.deviceInfo?.name || "Totem";
     const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
@@ -669,10 +669,11 @@ export async function connectStudio() {
     throw new Error("Web Serial is only in Chrome / Edge. Open this editor there.");
   }
 
-  // The keyboard's two USB serial functions enumerate under the identical
+  // A keyboard's USB serial functions all enumerate under the identical
   // device-level product name in Chrome's port picker (there is no
-  // per-interface string this browser API exposes), so picking the wrong one
-  // is easy. If either port was already granted access in an earlier
+  // per-interface string this browser API exposes), so if it exposes more
+  // than one - a debug console, some other future port - picking the wrong
+  // one is easy. If any port was already granted access in an earlier
   // session, probe those first and skip the picker entirely on success.
   for (const port of await navigator.serial.getPorts()) {
     try {
