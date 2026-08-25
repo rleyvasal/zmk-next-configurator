@@ -192,6 +192,7 @@ const state = {
   flashNotice: null,
   stockBindingTexts: new Map(),
   runtimeDirtyKeys: new Map(),
+  loadedBindings: new Map(),
 };
 
 const liveQueue = [];
@@ -218,7 +219,7 @@ function startRuntimeIdleWatch(expectedGeneration) {
     if (Date.now() - started > 60000) {
       stopRuntimeIdleWatch();
       setStatus(
-        "Runtime Config is saved on the keyboard. If the sidebar still says waiting for idle, lift all keys or Disconnect and Connect again."
+        "Running Configuration is saved on the keyboard. If the sidebar still says waiting for idle, lift all keys or Disconnect and Connect again."
       );
       return;
     }
@@ -235,14 +236,13 @@ function startRuntimeIdleWatch(expectedGeneration) {
           state.runtime.snapshot = createRuntimeDraft(live.snapshot);
           state.runtime.draft = createRuntimeDraft(live.snapshot);
         }
-        setStudioLabel("Connected · Runtime Config active", "on");
+        setStudioLabel("Connected · Running Configuration active", "on");
         paintRuntimeOverlayOnEditor(state.runtime.snapshot);
         renderKeyboard();
         renderCombinations();
-        setStatus(`Runtime Config generation ${active} is now active.`);
+        setStatus(`Running Configuration generation ${active} is now active.`);
         return;
       }
-      updateRuntimeGenerationLabel();
       renderRuntimeChrome();
     } catch {
       // USB may be briefly busy; keep the saved overlay until the next poll.
@@ -309,20 +309,18 @@ function setDirty(d) {
 }
 
 function setStudioLabel(text, kind = "") {
-  const el = $("studio-state");
-  el.textContent = text;
-  el.className = `studio-state ${kind}`.trim();
+  const banner = $("runtime-banner");
+  const conn = $("runtime-banner-conn");
+  if (banner && conn) {
+    banner.hidden = !state.studio;
+    banner.className = `runtime-banner ${kind}`.trim();
+    conn.textContent = text;
+  }
 }
 
 function updateStudioButtons() {
   const on = !!state.studio;
-  $("studio-connect").textContent = on ? "Disconnect" : "Connect";
   $("studio-apply").disabled = !on;
-  const reset = $("runtime-reset");
-  if (reset) {
-    reset.hidden = !state.runtime;
-    reset.disabled = !on || !state.runtime;
-  }
   const hint = $("live-hint");
   if (hint) {
     hint.innerHTML = state.runtime
@@ -870,6 +868,10 @@ function renderInspect(force = false) {
     if (raw) raw.textContent = text;
     const pretty = $("inspect-pretty");
     if (pretty) pretty.textContent = bindingLabel(text);
+    const liveValue = $("inspect-override-live");
+    if (liveValue) liveValue.textContent = text;
+    const editValue = $("inspect-edit-current");
+    if (editValue) editValue.textContent = text;
     return;
   }
   el.dataset.view = view;
@@ -897,6 +899,40 @@ function renderInspect(force = false) {
   raw.textContent = text;
   head.append(left, raw);
   form.appendChild(head);
+
+  const override = overriddenPositionsOnCurrentLayer().get(idx);
+  if (override) {
+    const box = document.createElement("div");
+    box.className = "inspect-override";
+    box.innerHTML = `
+      <div class="inspect-override-row">
+        <span class="inspect-override-label">Firmware</span>
+        <code class="inspect-override-value">${override.firmwareText}</code>
+      </div>
+      <div class="inspect-override-row live">
+        <span class="inspect-override-label">Running Configuration · live</span>
+        <code id="inspect-override-live" class="inspect-override-value">${override.liveText}</code>
+      </div>
+    `;
+    form.appendChild(box);
+  }
+
+  const edit = locallyEditedPositionsOnCurrentLayer().get(idx);
+  if (edit) {
+    const box = document.createElement("div");
+    box.className = "inspect-override";
+    box.innerHTML = `
+      <div class="inspect-override-row">
+        <span class="inspect-override-label">Loaded</span>
+        <code class="inspect-override-value">${edit.loadedText}</code>
+      </div>
+      <div class="inspect-override-row edited">
+        <span class="inspect-override-label">Current · edited</span>
+        <code id="inspect-edit-current" class="inspect-override-value">${edit.currentText}</code>
+      </div>
+    `;
+    form.appendChild(box);
+  }
 
   const row = document.createElement("div");
   row.className = "inspect-fields";
@@ -1247,6 +1283,120 @@ function setEditingMode() {
   renderPalette();
 }
 
+/**
+ * Position -> letter(s) of the combo(s) it's a trigger for, so keys that
+ * pair together on the board can share a badge. Scoped to combos only —
+ * hold-taps, macros, and other behaviors are single-key, so there's no
+ * pairing for a badge to show. A key can belong to more than one active
+ * combo at once, hence an array of letters per position.
+ */
+function comboBadgeLettersByPosition() {
+  const map = new Map();
+  let next = 0;
+  const nextLetter = () => {
+    let n = ++next;
+    let s = "";
+    while (n > 0) {
+      n--;
+      s = String.fromCharCode(65 + (n % 26)) + s;
+      n = Math.floor(n / 26);
+    }
+    return s;
+  };
+  const addPositions = (positions, letter) => {
+    for (const pos of positions) {
+      if (!map.has(pos)) map.set(pos, []);
+      map.get(pos).push(letter);
+    }
+  };
+  for (const c of state.combos) {
+    if (c.deleted || !comboActiveOnLayer(c, state.layer)) continue;
+    addPositions(c.positions, nextLetter());
+  }
+  for (const c of state.runtime?.draft?.combos || []) {
+    if (!runtimeComboActiveOnLayer(c, state.layer)) continue;
+    addPositions(stockPositionsToSelectedIndexes(state.runtime.capabilities, c.keyPositions), nextLetter());
+  }
+  return map;
+}
+
+// Positions on the current layer where the *device's own saved snapshot* has
+// a keymap_overrides entry - a plain per-key diff, not combos/macros (those
+// have their own distinct markers: the badge above, and none yet for runtime
+// objects). Deliberately reads the override straight from
+// `state.runtime.snapshot` and decodes its own text via
+// `bindingTextFromAction` (mirroring `paintRuntimeOverlayOnEditor`), instead
+// of comparing against `currentBindings()` - the editor can be showing a
+// file/GitHub source unrelated to the device's actual firmware while still
+// connected, and comparing against *that* produced false positives (and,
+// gating the whole thing on `state.source === "keyboard"` to avoid those,
+// false *negatives*: real device overrides stayed invisible while viewing
+// any other source, even though the banner up top was already reporting
+// them). This version only asks "does the connected device have an override
+// here", which doesn't depend on what's currently being viewed at all.
+function overriddenPositionsOnCurrentLayer() {
+  const map = new Map();
+  const overrides = state.runtime?.snapshot?.keymapOverrides;
+  if (!state.studio || !overrides?.length) return map;
+  const studioIdx = studioLayerIndex(state.layer);
+  const studioLayer = studioIdx == null ? null : state.studio.layers?.[studioIdx];
+  const firmware = studioLayer ? state.stockBindingTexts?.get(studioLayer.id) : null;
+  if (!firmware) return map;
+  const caps = state.runtime.capabilities;
+  const opts = runtimeEncodeOpts();
+  for (const override of overrides) {
+    if (override.layerId !== studioLayer.id) continue;
+    const selected = stockToSelectedIndex(caps, override.keyPosition);
+    if (selected < 0) continue;
+    const firmwareText = firmware[selected];
+    if (firmwareText == null) continue;
+    const liveText = bindingTextFromAction(override.action, opts);
+    if (liveText && !bindingsMatchForOverlay(liveText, firmwareText)) {
+      map.set(selected, { firmwareText, liveText });
+    }
+  }
+  return map;
+}
+
+// Snapshot of every layer's binding text at the moment it was last loaded
+// (file, GitHub, or keyboard) - the reference point for "have I locally
+// edited this key this session", independent of Running Config entirely.
+// Deliberately a real snapshot rather than deriving from state.history:
+// history.undoStack would miss edits made through the inspect panel's form
+// fields, which pass noUndo:true specifically to avoid one undo entry per
+// keystroke - this needs to catch every edit path uniformly.
+function captureLoadedBindingsSnapshot() {
+  const map = new Map();
+  for (const layer of state.layers) {
+    map.set(layer.id, layer.bindings.map((b) => b.text));
+  }
+  state.loadedBindings = map;
+}
+
+// Positions on the current layer whose text no longer matches what was
+// loaded at the start of this session - catches any edit path (drag,
+// palette, inspect form, clear, swap, copy), unlike overriddenPositionsOnCurrentLayer
+// above which is specifically about the *device's* saved override set.
+// A key can be flagged by neither, either, or both of these independently:
+// a pre-existing device override you haven't touched this session shows
+// only the override dot; a fresh local edit not yet saved anywhere shows
+// only this one; editing an already-overridden key shows both.
+function locallyEditedPositionsOnCurrentLayer() {
+  const map = new Map();
+  const layer = state.layers[state.layer];
+  if (!layer) return map;
+  const loaded = state.loadedBindings.get(layer.id);
+  if (!loaded) return map;
+  const bindings = currentBindings();
+  loaded.forEach((loadedText, idx) => {
+    const currentText = bindings[idx]?.text ?? "&trans";
+    if (!bindingsMatchForOverlay(currentText, loadedText)) {
+      map.set(idx, { loadedText, currentText });
+    }
+  });
+  return map;
+}
+
 function bindingTint(text, index) {
   const model = parseBinding(text);
   const ctx = inspectContext();
@@ -1392,6 +1542,9 @@ function renderKeyboard() {
   const box = layoutBounds(keys);
   svg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.width} ${box.height}`);
   svg.replaceChildren();
+  const comboBadges = comboBadgeLettersByPosition();
+  const overrides = overriddenPositionsOnCurrentLayer();
+  const edits = locallyEditedPositionsOnCurrentLayer();
 
   keys.forEach((k, i) => {
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -1469,6 +1622,60 @@ function renderKeyboard() {
     idx.textContent = String(i);
     g.append(idx);
 
+    const badgeLetters = comboBadges.get(i);
+    if (badgeLetters?.length && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+      const wide = badgeLetters.length > 1;
+      const badgeR = wide ? 17.5 : 14;
+      const badgeCx = k.x + k.w - badgeR - 3;
+      const badgeCy = k.y + badgeR + 3;
+      const badge = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      badge.setAttribute("class", "combo-pair-badge");
+      badge.setAttribute("cx", badgeCx);
+      badge.setAttribute("cy", badgeCy);
+      badge.setAttribute("r", String(badgeR));
+      const badgeLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      badgeLabel.setAttribute("class", "combo-pair-badge-label");
+      badgeLabel.setAttribute("x", badgeCx);
+      badgeLabel.setAttribute("y", badgeCy);
+      if (wide) badgeLabel.style.fontSize = "12px";
+      badgeLabel.textContent = badgeLetters.join(",");
+      g.append(badge, badgeLabel);
+    }
+
+    if (overrides.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+      const dotR = 5.5;
+      const dotCx = k.x + dotR + 3;
+      const dotCy = k.y + dotR + 3;
+      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      ring.setAttribute("class", "override-dot-ring");
+      ring.setAttribute("cx", dotCx);
+      ring.setAttribute("cy", dotCy);
+      ring.setAttribute("r", String(dotR + 2));
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("class", "override-dot");
+      dot.setAttribute("cx", dotCx);
+      dot.setAttribute("cy", dotCy);
+      dot.setAttribute("r", String(dotR));
+      g.append(ring, dot);
+    }
+
+    if (edits.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+      const dotR = 5.5;
+      const dotCx = k.x + k.w - dotR - 3;
+      const dotCy = k.y + k.h - dotR - 3;
+      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      ring.setAttribute("class", "edit-dot-ring");
+      ring.setAttribute("cx", dotCx);
+      ring.setAttribute("cy", dotCy);
+      ring.setAttribute("r", String(dotR + 2));
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("class", "edit-dot");
+      dot.setAttribute("cx", dotCx);
+      dot.setAttribute("cy", dotCy);
+      dot.setAttribute("r", String(dotR));
+      g.append(ring, dot);
+    }
+
     g.dataset.index = String(i);
     rect.addEventListener("pointerdown", (ev) => startKeyDrag(ev, i));
     svg.appendChild(g);
@@ -1528,6 +1735,7 @@ function applySettingsToUi() {
   state.emptyBinding = state.settings.emptyBinding;
   document.body.classList.toggle("hide-positions", !state.settings.showPositions);
   document.body.classList.toggle("hide-colors", !state.settings.showColors);
+  document.body.classList.toggle("hide-combo-pairs", !state.settings.showComboPairs);
   if ($("color-legend")) $("color-legend").hidden = !state.settings.showColors;
   syncSettingsForm();
 }
@@ -1538,6 +1746,7 @@ function syncSettingsForm() {
   if ($("set-empty")) $("set-empty").value = s.emptyBinding;
   if ($("set-positions")) $("set-positions").checked = !!s.showPositions;
   if ($("set-colors")) $("set-colors").checked = !!s.showColors;
+  if ($("set-combo-pairs")) $("set-combo-pairs").checked = !!s.showComboPairs;
   if ($("set-tapping")) $("set-tapping").value = String(s.tappingTerm);
   if ($("set-combo-timeout")) $("set-combo-timeout").value = String(s.comboTimeout);
   if ($("set-confirm-apply")) $("set-confirm-apply").checked = !!s.confirmApply;
@@ -1994,7 +2203,7 @@ function renderCombinations() {
     const chip = document.createElement("div");
     chip.className = `combo-chip ${item.tint}${item.guarded ? " guarded" : ""}${draftId === item.id ? " active" : ""}${itemHasRuntimeIssue(item) ? " runtime-error" : ""}`;
     chip.title = `${item.title} · ${item.detail}`;
-    chip.innerHTML = `<span class="combo-keys">${item.title}</span><span>→</span><span class="combo-out">${item.detail}</span>`;
+    chip.innerHTML = `<span class="combo-tab"></span><span class="combo-keys">${item.title}</span><span>→</span><span class="combo-out">${item.detail}</span>`;
     if (!item.guarded) {
       const x = document.createElement("button");
       x.type = "button";
@@ -2919,7 +3128,7 @@ function announceSavedCombination(kind, item, { created } = {}) {
     behaviors: (kind === "hold-tap" || kind === "behavior") && item ? [item] : [],
   });
   if (runtime.ok) {
-    setStatus(`${item.id || kind} is in the Runtime Config draft. Apply to save it on the keyboard.`);
+    setStatus(`${item.id || kind} is in the Running Configuration draft. Apply to save it on the keyboard.`);
     return true;
   }
   if (kind === "combo") showFlashNeeded("combo", item?.id, { created });
@@ -3088,7 +3297,7 @@ function saveCombinationBuilder() {
       combos: comboWrap ? [comboWrap] : [],
     });
     if (runtime.ok) {
-      setStatus(`${id} is in the Runtime Config draft. Apply to save it on the keyboard.`);
+      setStatus(`${id} is in the Running Configuration draft. Apply to save it on the keyboard.`);
       return;
     }
   }
@@ -3929,7 +4138,7 @@ async function refreshRuntimeFromDevice() {
 function keyboardLoadStatus(loaded) {
   const dropped = loaded.dropped?.length ? ` Discarded editor-only: ${loaded.dropped.join(", ")}.` : "";
   if (!loaded.ok) return loaded.reason;
-  const overlay = state.runtime ? ` Runtime Config ${runtimeOverlaySummary()}.` : "";
+  const overlay = state.runtime ? ` Running Configuration: ${runtimeOverlaySummary()}.` : "";
   const combos = loaded.restoredCombinations
     ? " Combinations are the compiled keymap plus the overlay on the board."
     : "";
@@ -4054,6 +4263,7 @@ function loadEditorFromKeyboard(client, opts = {}) {
   state.runtimeDirtyKeys = new Map();
   const restoredCombinations = replace && restoreCompiledCombinationsFromKeymapFile();
   paintRuntimeOverlayOnEditor(state.runtime?.snapshot);
+  captureLoadedBindingsSnapshot();
   state.source = "keyboard";
   const vsFile = bindingsDifferFromFile();
   state.dirty = replace ? false : vsFile || extraEditorLayers().length > 0;
@@ -4277,24 +4487,11 @@ async function probeRuntimeConfig(client) {
   }
 }
 
-async function connectOrDisconnect() {
-  if (state.studio) {
-    await state.studio.close();
-    stopRuntimeIdleWatch();
-    state.studio = null;
-    state.runtime = null;
-    state.runtimeIssues = [];
-    closeRuntimeEditor();
-    state.deviceLayerCount = 0;
-    setStudioLabel("Not connected");
-    $("session").classList.remove("live");
-    updateStudioButtons();
-    renderLayers();
-    renderCombinations();
-    updateLayerOfflineBanner();
-    setStatus("Disconnected from keyboard.");
-    return;
-  }
+// Opens the Studio connection and syncs the small set of chrome that
+// reflects "we're now talking to a keyboard." Returns the connected client,
+// or null if the user cancelled the port picker or the connection failed
+// (both already reported via setStatus/setStudioLabel before returning).
+async function establishStudioConnection() {
   setStudioLabel("Connecting…");
   try {
     const client = await connectStudio();
@@ -4303,45 +4500,43 @@ async function connectOrDisconnect() {
     rememberStockBindings(client);
     state.runtimeDirtyKeys = new Map();
     state.runtime = await probeRuntimeConfig(client);
-    $("kb-name").textContent = client.deviceName || state.profile?.name || "Keyboard";
-    setStudioLabel(state.runtime ? "Connected · Runtime Config ready" : "Connected", "on");
+    const deviceLabel = $("runtime-banner-device");
+    if (deviceLabel) deviceLabel.textContent = client.deviceName || state.profile?.name || "Keyboard";
+    setStudioLabel(state.runtime ? "Connected · Running Configuration ready" : "Connected", "on");
     $("session").classList.add("live");
     updateStudioButtons();
     renderCombinations();
-    if (state.source === "file" || state.source === "github") {
-      updateChrome();
-      setStatus(
-        `Connected to ${client.deviceName}. Still ${sourceStatusText()}. Apply to push this keymap, or Load from Keyboard to read the board.` +
-          (state.runtime ? ` Runtime Config ${runtimeOverlaySummary()}.` : "")
-      );
-      return;
-    }
-    if (state.dirty) {
-      const discard = window.confirm(
-        "Load from the keyboard and discard editor changes, including any layers not on the board?"
-      );
-      if (!discard) {
-        updateChrome();
-        setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply to keyboard to push them.`);
-        return;
-      }
-    }
-    const loaded = loadEditorFromKeyboard(client, { replace: true });
-    if (!loaded.ok) {
-      setStatus(`Connected, but keyboard decode failed: ${loaded.reason}`);
-      return;
-    }
-    renderCombinations();
-    setStatus(keyboardLoadStatus(loaded));
+    return client;
   } catch (err) {
     if (err?.name === "NotFoundError") {
       setStudioLabel("Not connected");
       setStatus("Connect cancelled.");
-      return;
+    } else {
+      setStudioLabel("Connect failed", "err");
+      setStatus(err.message);
     }
-    setStudioLabel("Connect failed", "err");
-    setStatus(err.message);
+    return null;
   }
+}
+
+// Shared dirty-check-then-load-then-report sequence for any path that
+// already has a connected client and wants to paint its keymap into the editor.
+function loadKeyboardIntoEditor(client) {
+  if (
+    state.dirty &&
+    !window.confirm("Load from the keyboard and discard editor changes, including any layers not on the board?")
+  ) {
+    updateChrome();
+    setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply to keyboard to push them.`);
+    return;
+  }
+  const loaded = loadEditorFromKeyboard(client, { replace: true });
+  if (!loaded.ok) {
+    setStatus(`Connected, but keyboard decode failed: ${loaded.reason}`);
+    return;
+  }
+  renderCombinations();
+  setStatus(keyboardLoadStatus(loaded));
 }
 
 function runtimeEditorLayers() {
@@ -4536,8 +4731,8 @@ async function applyRuntimeAll() {
   if (!draft.keymapOverrides.length && !draft.runtimeObjects.length && !draft.combos.length) {
     setStatus(
       state.dirty
-        ? "That edit did not produce a Runtime Config overlay (it still matches the compiled keymap, or it cannot be encoded live). Change a normal key, then Apply immediately — do not Load from Keyboard first."
-        : "Nothing to save: every key already matches the compiled keymap. Click a key, assign a different letter from the palette, then Apply. Do not Load from Keyboard until after you see generation 1."
+        ? "That edit did not produce a Running Configuration overlay (it still matches the compiled keymap, or it cannot be encoded live). Change a normal key, then Apply immediately — do not Connect first."
+        : "Nothing to save: every key already matches the compiled keymap. Click a key, assign a different letter from the palette, then Apply. Do not Connect until after you see generation 1."
     );
     renderCombinations();
     return;
@@ -4549,7 +4744,7 @@ async function applyRuntimeAll() {
     .map((row) => `${row.label} ${row.used}${row.limit == null ? "" : `/${row.limit}`}`)
     .join(", ");
   const prompt =
-    "Save one complete Runtime Config snapshot to the keyboard? It will persist through reboot and activate only when the keyboard is idle." +
+    "Save one complete Running Configuration snapshot to the keyboard? It will persist through reboot and activate only when the keyboard is idle." +
     `\n\nResource use: ${rows}.` +
     (over ? `\n\nThis draft exceeds firmware limits: ${over}` : "") +
     (skipped.length
@@ -4563,12 +4758,12 @@ async function applyRuntimeAll() {
     return;
   }
   if (over) {
-    presentRuntimeIssues([{ kind: "generic", message: `Runtime Config needs ${over}` }], `Cannot apply: ${over}`);
+    presentRuntimeIssues([{ kind: "generic", message: `Running Configuration needs ${over}` }], `Cannot apply: ${over}`);
     return;
   }
 
   state.runtimeIssues = [];
-  setStatus(`Saving Runtime Config (${draft.keymapOverrides.length} key overlay(s))…`);
+  setStatus(`Saving Running Configuration (${draft.keymapOverrides.length} key overlay(s))…`);
   let validation;
   let commit;
   try {
@@ -4610,7 +4805,7 @@ async function applyRuntimeAll() {
       state.runtime.draft = createRuntimeDraft(live.snapshot);
     }
     if (!liveGen) {
-      setStudioLabel("Connected · Runtime Config ready", "on");
+      setStudioLabel("Connected · Running Configuration ready", "on");
       renderCombinations();
       setStatus(
         "Apply returned, but the keyboard still reports generation 0. The overlay did not stay. Keep USB connected, change one key, and Apply once more."
@@ -4623,7 +4818,7 @@ async function applyRuntimeAll() {
   state.runtimeDirtyKeys = new Map();
   const pending = state.runtime.status?.pendingGeneration === commit.generation;
   setStudioLabel(
-    pending ? "Connected · config saved, waiting for idle" : "Connected · Runtime Config active",
+    pending ? "Connected · config saved, waiting for idle" : "Connected · Running Configuration active",
     "on"
   );
   if (pending) startRuntimeIdleWatch(commit.generation);
@@ -4656,7 +4851,7 @@ async function applyRuntimeAll() {
         .join(", ")}.`
     : "";
   setStatus(
-    `Saved Runtime Config generation ${commit.generation}` +
+    `Saved Running Configuration generation ${commit.generation}` +
       (pending ? "; waiting for keyboard idle before activation." : " and activated.") +
       usageNote
   );
@@ -4666,13 +4861,13 @@ async function restoreRuntimeStock() {
   if (!state.studio || !state.runtime) return;
   if (
     !window.confirm(
-      "Restore the compiled stock configuration? This saves an empty Runtime Config generation. The previous valid generation remains available for on-device recovery."
+      "Restore the compiled stock configuration? This saves an empty Running Configuration generation. The previous valid generation remains available for on-device recovery."
     )
   ) {
     setStatus("Restore stock cancelled.");
     return;
   }
-  setStatus("Saving stock Runtime Config generation…");
+  setStatus("Saving stock Running Configuration generation…");
   const reset = await state.studio.resetRuntimeConfig({
     expectedActiveGeneration: state.runtime.snapshot.generation,
   });
@@ -4703,7 +4898,7 @@ async function restoreRuntimeStock() {
   updateStudioButtons();
   renderCombinations();
   setStatus(
-    `Saved stock Runtime Config generation ${reset.generation}` +
+    `Saved stock Running Configuration generation ${reset.generation}` +
       (pending ? "; waiting for keyboard idle before activation." : ".") +
       " The editor still shows your local keymap."
   );
@@ -4763,36 +4958,62 @@ function runtimeObjectDetail(object) {
   return object.type;
 }
 
+function runtimeGenerationStatus() {
+  const status = state.runtime?.status || {};
+  const snap = state.runtime?.snapshot || {};
+  return {
+    active: Number(status.activeGeneration ?? snap.generation ?? 0),
+    pending: Number(status.pendingGeneration ?? 0),
+  };
+}
+
 function runtimeOverlaySummary() {
   if (!state.runtime) return "";
-  const status = state.runtime.status || {};
+  const { active, pending } = runtimeGenerationStatus();
   const snap = state.runtime.snapshot || {};
-  const active = Number(status.activeGeneration ?? snap.generation ?? 0);
-  const pending = Number(status.pendingGeneration ?? 0);
   const keys = (snap.keymapOverrides || []).length;
   const objects = (snap.runtimeObjects || []).length;
   const combos = (snap.combos || []).length;
   const parts = [];
-  if (keys) parts.push(`${keys} key${keys === 1 ? "" : "s"}`);
+  if (keys) parts.push(`${keys} key${keys === 1 ? "" : "s"} overwritten`);
   if (combos) parts.push(`${combos} combo${combos === 1 ? "" : "s"}`);
   if (objects) parts.push(`${objects} object${objects === 1 ? "" : "s"}`);
   const contents = parts.length ? parts.join(", ") : "stock keymap only";
-  if (pending && pending !== active) {
-    return `generation ${pending} saved, waiting for idle (${contents}). Active: ${active || "stock"}`;
-  }
-  return `generation ${active} · ${contents}`;
+  return pending && pending !== active ? `${contents} — saved, waiting for idle to activate` : contents;
 }
 
-function updateRuntimeGenerationLabel() {
-  const el = $("runtime-generation");
-  if (!el) return;
-  if (!state.runtime) {
-    el.hidden = true;
-    el.textContent = "";
-    return;
-  }
-  el.hidden = false;
-  el.textContent = `Keyboard overlay: ${runtimeOverlaySummary()}`;
+// Generation is a persisted on-device commit counter - real, but meaningless
+// to a GUI user. Kept out of headline text and surfaced only as hover detail
+// (the banner's "Debug info" affordance).
+function runtimeGenerationDebugText() {
+  if (!state.runtime) return "";
+  const { active, pending } = runtimeGenerationStatus();
+  const genLine = pending && pending !== active
+    ? `Debug: generation ${pending} saved, waiting for idle. Active generation ${active || "stock"}.`
+    : `Debug: active generation ${active}, persisted on-device commit counter.`;
+  const overrides = state.runtime.snapshot?.keymapOverrides || [];
+  if (!overrides.length) return genLine;
+  const opts = runtimeEncodeOpts();
+  const layerIds = (state.studio?.layers || []).map((l) => l.id).join(", ");
+  const rows = overrides.map(
+    (o) => `  layerId=${o.layerId} keyPosition=${o.keyPosition} -> ${bindingTextFromAction(o.action, opts) || "(undecoded)"}`
+  );
+  return `${genLine}\nkeymapOverrides (${overrides.length}), raw:\n${rows.join("\n")}\nstudio layer ids in order: ${layerIds}`;
+}
+
+function renderRuntimeBanner() {
+  const label = $("runtime-banner-label");
+  const summary = $("runtime-banner-summary");
+  const restore = $("runtime-banner-restore");
+  const debug = $("runtime-banner-debug");
+  if (!label || !summary || !restore || !debug) return;
+  const on = !!state.runtime;
+  label.hidden = !on;
+  summary.textContent = on ? `· ${runtimeOverlaySummary()}` : "";
+  restore.hidden = !on;
+  restore.disabled = !state.studio;
+  debug.hidden = !on;
+  debug.title = runtimeGenerationDebugText();
 }
 
 function renderRuntimeChrome() {
@@ -4807,7 +5028,7 @@ function renderRuntimeChrome() {
   if (importBtn) importBtn.hidden = !state.runtime || !hasKeymapRuntimeSources();
   if (exportBtn) exportBtn.hidden = !state.runtime;
   if (advancedBtn) advancedBtn.hidden = !state.runtime;
-  updateRuntimeGenerationLabel();
+  renderRuntimeBanner();
   if (usage) {
     usage.hidden = !state.runtime;
     usage.replaceChildren();
@@ -4923,7 +5144,7 @@ function hasKeymapRuntimeSources() {
 
 function exportRuntimeDocumentFile() {
   if (!state.runtime?.draft) {
-    setStatus("Connect a Runtime Config keyboard before exporting a snapshot.");
+    setStatus("Connect a Running Configuration keyboard before exporting a snapshot.");
     return;
   }
   let snapshot = state.runtime.draft;
@@ -4956,7 +5177,7 @@ function exportRuntimeDocumentFile() {
 
 function importRuntimeDocumentText(text) {
   if (!state.runtime?.snapshot) {
-    throw new Error("Connect a Runtime Config keyboard before importing a runtime document.");
+    throw new Error("Connect a Running Configuration keyboard before importing a runtime document.");
   }
   const document = parseRuntimeDocument(text);
   const result = applyRuntimeDocument({
@@ -4968,7 +5189,7 @@ function importRuntimeDocumentText(text) {
   });
   const skipped = result.skipped.map((item) => `${item.kind} ${item.id}: ${item.reason}`).join("\n");
   const prompt = [
-    `Replace the local Runtime Config draft with this document (${result.imported.length} imported${result.skipped.length ? `, ${result.skipped.length} skipped` : ""})?`,
+    `Replace the local Running Configuration draft with this document (${result.imported.length} imported${result.skipped.length ? `, ${result.skipped.length} skipped` : ""})?`,
     result.warnings.join("\n"),
     skipped,
     "Nothing is written to the keyboard until Apply.",
@@ -5008,7 +5229,7 @@ function importRuntimeDocumentText(text) {
 
 function importKeymapToRuntimeDraft() {
   if (!state.runtime?.draft) {
-    setStatus("Connect a Runtime Config keyboard before importing keymap objects.");
+    setStatus("Connect a Running Configuration keyboard before importing keymap objects.");
     return;
   }
   if (!hasKeymapRuntimeSources()) {
@@ -5028,7 +5249,7 @@ function importKeymapToRuntimeDraft() {
   const summary = formatRuntimeImportSummary(preview);
   if (!preview.imported.length) {
     window.alert(summary);
-    setStatus("No keymap definitions could be imported into Runtime Config.");
+    setStatus("No keymap definitions could be imported into Running Configuration.");
     return;
   }
   if (!window.confirm(summary)) {
@@ -5072,7 +5293,7 @@ function openRuntimeCreator() {
 
 function openRuntimeEditor(item = null) {
   if (!state.runtime) {
-    setStatus("Connect a Runtime Config keyboard to edit live objects.");
+    setStatus("Connect a Running Configuration keyboard to edit live objects.");
     return;
   }
   closeOtherEditors();
@@ -5650,6 +5871,7 @@ function loadKeymapText(text, name = "keymap.keymap", origin = "file") {
   state.keymapPath = name;
   state.sourceLabel = name;
   state.layers = parsed.layers;
+  captureLoadedBindingsSnapshot();
   state.combos = parsed.combos || [];
   state.comboInsertAt = parsed.comboInsertAt ?? -1;
   state.behaviors = parsed.behaviors || [];
@@ -5781,7 +6003,6 @@ function applyProfileObject(profile, opts = {}) {
     localStorage.setItem("keymap-layout", profile.id);
   }
   fillLayoutSelect();
-  updateKeyboardName();
   renderKeyboard();
 }
 
@@ -5974,12 +6195,14 @@ async function loadDroppedRepo(dt) {
   setStatus(`Found ${picked.keymaps.length} keymap(s) in the dropped files. Confirm the files to load.`);
 }
 
-async function loadFromKeyboard() {
-  if (!state.studio) {
-    await connectOrDisconnect();
+async function connectToKeyboard() {
+  if (state.studio) {
+    await refreshFromKeyboard();
     return;
   }
-  await refreshFromKeyboard();
+  const client = await establishStudioConnection();
+  if (!client) return;
+  loadKeyboardIntoEditor(client);
 }
 
 function sampleKeymapUrl() {
@@ -6012,10 +6235,6 @@ function fillLayoutSelect() {
   }
 }
 
-function updateKeyboardName() {
-  const el = $("kb-name");
-  if (el) el.textContent = state.profile?.name || "Keyboard";
-}
 
 async function applyProfileId(id) {
   if (state.importedProfile && state.importedProfile.id === id) {
@@ -6087,11 +6306,8 @@ function boot() {
       renderPalette();
     });
     $("search").addEventListener("input", renderPalette);
-    $("studio-connect")?.addEventListener("click", () => {
-      connectOrDisconnect().catch((err) => setStatus(err.message));
-    });
     $("load-keyboard")?.addEventListener("click", () => {
-      loadFromKeyboard().catch((err) => setStatus(err.message));
+      connectToKeyboard().catch((err) => setStatus(err.message));
     });
     $("load-github")?.addEventListener("click", () => {
       loadFromGitHub().catch((err) => setStatus(err.message));
@@ -6110,8 +6326,13 @@ function boot() {
     $("studio-apply")?.addEventListener("click", () => {
       applyLiveAll().catch((err) => setStatus(err.message));
     });
-    $("runtime-reset")?.addEventListener("click", () => {
+    $("runtime-banner-restore")?.addEventListener("click", () => {
       restoreRuntimeStock().catch((err) => setStatus(err.message));
+    });
+    $("runtime-banner-debug")?.addEventListener("click", () => {
+      // Same text as the hover tooltip, also logged so it's easy to copy out
+      // of devtools instead of screenshotting a native title tooltip.
+      console.log(runtimeGenerationDebugText());
     });
     $("combo-new")?.addEventListener("click", () => {
       openCombinationBuilder(null);
@@ -6326,9 +6547,6 @@ function boot() {
     $("svg").addEventListener("click", () => downloadText("zmk-next-configurator.svg", svgMarkup(), "image/svg+xml"));
     $("undo").addEventListener("click", () => undoBindings());
     $("redo").addEventListener("click", () => redoBindings());
-    $("refresh-kb")?.addEventListener("click", () => {
-      refreshFromKeyboard().catch((err) => setStatus(err.message));
-    });
     $("reload")?.addEventListener("click", () => {
       loadSample().catch((err) => setStatus(err.message));
     });
@@ -6376,13 +6594,11 @@ function boot() {
       }
     });
     const serialHint = "Web Serial. Pick the silent ZMK Studio RPC port, not printk. Close zmk.studio first.";
-    if ($("studio-connect")) $("studio-connect").title = serialHint;
     if ($("load-keyboard")) $("load-keyboard").title = serialHint;
     if (!("serial" in navigator)) {
-      if ($("studio-connect")) $("studio-connect").hidden = true;
       if ($("load-keyboard")) $("load-keyboard").disabled = true;
       if ($("studio-apply")) $("studio-apply").disabled = true;
-      if ($("studio-state")) $("studio-state").textContent = "Web Serial not available in this browser";
+      setStatus("Web Serial not available in this browser. Connect requires Chrome, Edge, or another Web Serial browser.");
     }
     $("settings-open")?.addEventListener("click", openSettings);
     $("settings-close")?.addEventListener("click", closeSettings);
@@ -6395,6 +6611,7 @@ function boot() {
         emptyBinding: $("set-empty").value,
         showPositions: $("set-positions").checked,
         showColors: $("set-colors").checked,
+        showComboPairs: $("set-combo-pairs").checked,
         tappingTerm: $("set-tapping").value,
         comboTimeout: $("set-combo-timeout").value,
         confirmApply: $("set-confirm-apply").checked,

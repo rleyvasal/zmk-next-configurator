@@ -24,7 +24,7 @@
         <div class="header-sources">
           <button type="button" id="load-keyboard" class="src-btn">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 11h.01M10 11h4M18 11h.01M8 15h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            Load from Keyboard
+            Connect
           </button>
           <label class="src-btn file-btn">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
@@ -52,17 +52,19 @@
         <span class="dot" aria-hidden="true"></span>
         <span id="source-status-text">Showing: File</span>
       </div>
+      <div id="runtime-banner" class="runtime-banner" hidden>
+        <span class="dot" aria-hidden="true"></span>
+        <span id="runtime-banner-conn" class="runtime-banner-conn">Not connected</span>
+        <span id="runtime-banner-device" class="runtime-banner-summary"></span>
+        <span class="runtime-banner-sep" aria-hidden="true"></span>
+        <span id="runtime-banner-label" class="runtime-banner-label" hidden>Running Configuration</span>
+        <span id="runtime-banner-summary" class="runtime-banner-summary"></span>
+        <button type="button" id="runtime-banner-restore" class="runtime-banner-restore" hidden>Restore stock</button>
+        <span id="runtime-banner-debug" class="runtime-banner-debug" title="" hidden>Debug info</span>
+      </div>
     </header>
     <main class="workspace">
       <aside class="session" id="session">
-        <section class="side-block">
-          <h3>Connection</h3>
-          <div id="studio-state" class="studio-state">Not connected</div>
-          <div class="session-name" id="kb-name">Keyboard</div>
-          <p id="runtime-generation" class="runtime-generation" hidden></p>
-          <button id="studio-connect" class="ghost-btn">Connect</button>
-          <button id="runtime-reset" class="ghost-btn" hidden>Restore stock configuration</button>
-        </section>
         <section class="side-block">
           <h3>Keyboard</h3>
           <select id="layout-profile" aria-label="Layout profile"></select>
@@ -87,16 +89,6 @@
       </aside>
       <section class="board">
         <div id="layers" class="layers"></div>
-        <div class="palette-bar">
-          <div class="palette-head">
-            <label class="palette-cat">
-              <span>Keys</span>
-              <select id="category" aria-label="Key category"></select>
-            </label>
-            <input id="search" type="search" placeholder="Search keys…" />
-          </div>
-          <div id="palette" class="palette"></div>
-        </div>
         <div id="layer-offline" class="layer-offline" hidden>
           <div class="flash-copy">
             <strong id="flash-banner-title"></strong>
@@ -107,6 +99,16 @@
         <p id="combo-pick-hint" class="combo-pick-hint" hidden>Click keys on the layout to add or remove them.</p>
         <div class="kb-wrap">
           <svg id="keyboard" class="keyboard" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="palette-bar">
+          <div class="palette-head">
+            <label class="palette-cat">
+              <span>Keys</span>
+              <select id="category" aria-label="Key category"></select>
+            </label>
+            <input id="search" type="search" placeholder="Search keys…" />
+          </div>
+          <div id="palette" class="palette"></div>
         </div>
         <section id="combo-builder" class="combo-editor" hidden>
           <form id="builder-form">
@@ -119,7 +121,7 @@
             <div class="builder-io">
             <div class="builder-block step-active" id="builder-trigger-block" data-builder-step="trigger">
               <div class="assign-head">
-                <span>Trigger</span>
+                <span class="assign-title"><span class="step-badge">1</span>Trigger</span>
                 <span class="field-hint" id="builder-trigger-hint">Click keys on the layout</span>
               </div>
               <div id="builder-triggers" class="builder-keys"></div>
@@ -127,14 +129,14 @@
             <div class="builder-io-out">
             <div class="builder-block step-idle" id="builder-output-block" data-builder-step="output">
               <div class="assign-head">
-                <span>Output</span>
+                <span class="assign-title"><span class="step-badge">2</span>Output</span>
                 <span class="field-hint" id="builder-output-hint">Click keys in the palette</span>
               </div>
               <div id="builder-outputs" class="builder-keys"></div>
             </div>
             <div class="builder-block step-idle" id="builder-hold-output" data-builder-step="output" hidden>
               <div class="assign-head">
-                <span>Hold sends</span>
+                <span class="assign-title"><span class="step-badge">2</span>Hold sends</span>
                 <span class="field-hint">Layer, modifier, or another key</span>
               </div>
               <div class="builder-cats" id="builder-hold-cats">
@@ -611,6 +613,13 @@
                 <small>Role colors for macros, hold-taps, layers, and combos.</small>
               </span>
               <input id="set-colors" type="checkbox" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-label">
+                Show combo pairs
+                <small>Small letter badge linking keys that share a combo.</small>
+              </span>
+              <input id="set-combo-pairs" type="checkbox" />
             </label>
           </section>
           <section class="settings-section">

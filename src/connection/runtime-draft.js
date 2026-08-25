@@ -624,7 +624,11 @@ export function bindingsMatchForOverlay(editorText, compiledText) {
   const editor = normalizeBindingText(editorText);
   const compiled = normalizeBindingText(compiledText);
   if (editor === compiled) return true;
-  const empty = (value) => !value || value === "&none" || value === "&trans";
+  // &trans/&none take no real params, but some firmware reports their param1/
+  // param2 as a generic (non-nil) kind, so the decoder pads them with literal
+  // zero args ("&trans 0 0") instead of the editor's own bare "&trans" - not
+  // an actual override, just two encodings of the same no-op binding.
+  const empty = (value) => !value || /^&(none|trans)(\s+0)*$/.test(value);
   return empty(editor) && empty(compiled);
 }
 

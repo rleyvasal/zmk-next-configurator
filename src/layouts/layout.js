@@ -105,10 +105,7 @@ export function layoutBounds(keys, pad = 40) {
 }
 
 /** Built-in layout profiles shipped with the editor. */
-export const PROFILE_INDEX = [
-  { id: "totem", name: "Totem", url: "../../layouts/totem.json" },
-  { id: "example-split", name: "Example split (6)", url: "../../layouts/example-split.json" },
-];
+export const PROFILE_INDEX = [{ id: "totem", name: "Totem", url: "../../layouts/totem.json" }];
 
 export function normalizeProfile(raw) {
   if (!raw || typeof raw !== "object") throw new Error("Invalid layout profile.");

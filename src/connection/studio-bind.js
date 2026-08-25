@@ -700,9 +700,18 @@ export function cellsToBinding(cell, behaviors, layers) {
   if (name === "rt" || name === "runtime_object") {
     return { ok: true, text: `&rt ${Number(cell.param1) || 0}` };
   }
-  const asMove = nameFromTable(cell.param1, MOUSE_MOVE);
-  const asScroll = nameFromTable(cell.param1, MOUSE_SCROLL);
-  const asBtn = nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
+  // Pointer-behavior disambiguation by raw param1 value only makes sense when
+  // the already-resolved behavior's own param1 has no declared meaning of its
+  // own. &lt/&mo/&to/&tog declare param1 as a layer index, and small layer
+  // indices (1, 2, 4, 8, 16 for a 5-6 layer keymap) routinely collide with
+  // MOUSE_BTN's bit-flag values (LCLK=1, RCLK=2, MCLK=4, MB4=8, MB5=16) -
+  // reclassifying a layer-tap as a mouse click because its layer number
+  // happens to match a button bit is never correct, regardless of the
+  // numeric coincidence.
+  const declaredLayer = paramKinds(behavior.param1).layer;
+  const asMove = !declaredLayer && nameFromTable(cell.param1, MOUSE_MOVE);
+  const asScroll = !declaredLayer && nameFromTable(cell.param1, MOUSE_SCROLL);
+  const asBtn = !declaredLayer && nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
   if (asMove && name !== "mmv") {
     const mmv = findBehavior(behaviors, "mmv");
     if (mmv) {

@@ -25,6 +25,11 @@ export const THEME = {
   accentDim: "#0891B2",
   accentInk: "#082F49",
 
+  // Live-override marker (the corner dot on keys that differ from firmware) —
+  // violet, deliberately unused elsewhere in this palette so it never reads
+  // as the cyan selection ring or any behavior kind's color.
+  override: "#A78BFA",
+
   // Hold-tap / home-row mods — vivid blue (&hml, &hmr, ht_*)
   holdTap: "#3B82F6",
   holdTapFill: "#1E3A8A",
@@ -78,6 +83,7 @@ const CSS_FROM_THEME = {
   "--accent-ink": "accentInk",
   "--select": "selected",
   "--select-fill": "selectedFill",
+  "--override": "override",
   "--ok": "ok",
   "--danger": "danger",
   "--danger-bg": "dangerBg",
