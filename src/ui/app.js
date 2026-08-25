@@ -164,6 +164,7 @@ const state = {
   layer: 0,
   layerMenu: null,
   layerRename: null,
+  pendingLayerActivation: null,
   selected: new Set(),
   dirty: false,
   sync: "saved",
@@ -556,11 +557,41 @@ function createLayer(after = state.layers.length - 1) {
     }),
     () => {
       state.layerRename = at;
+      // A brand-new layer is unreachable until some key on BASE activates it.
+      // Switch to BASE and ask the user to pick that key now, rather than
+      // leaving them on the new (empty, unreachable) layer with no next step.
+      state.layer = 0;
+      state.selected = new Set();
+      state.pendingLayerActivation = { layerId: id };
       afterLayerChange();
       if (state.studio) queueLiveLayerOp({ kind: "add", name: displayLayerName(id) });
       else showFlashNeeded("layer", displayLayerName(id));
+      setStatus(
+        `${displayLayerName(id)} created. Click a key on ${displayLayerName(state.layers[0]?.id)} to bind it as ${displayLayerName(id)}'s hold-activation key.`
+      );
     }
   );
+}
+
+/**
+ * Finishes the "pick a hold key for the new layer" flow started by
+ * createLayer(): binds the clicked BASE key to a layer-tap (&lt) that opens
+ * the pending layer on hold, preserving the key's prior plain keypress as the
+ * tap value (falling back to ESC), then opens that key in the normal inspect
+ * panel so the user can adjust the tap/behavior further.
+ */
+function handlePendingLayerActivationClick(index) {
+  const pending = state.pendingLayerActivation;
+  state.pendingLayerActivation = null;
+  if (!pending) return;
+  state.layer = 0;
+  const priorText = currentBindings()[index]?.text ?? "";
+  const priorModel = parseBinding(priorText);
+  const tap = priorModel.behavior === "kp" && priorModel.key && !priorModel.mods.length ? priorModel.key : "ESC";
+  const text = formatBinding({ behavior: "lt", layer: layerToken(pending.layerId), key: tap, mods: [] });
+  assignBinding(index, text, { silent: true });
+  selectOnly(index);
+  setStatus(`P${index} now holds ${displayLayerName(pending.layerId)} (tap: ${tap}). Adjust it in the panel below.`);
 }
 
 function duplicateLayer(index) {
@@ -971,6 +1002,14 @@ function renderInspect(force = false) {
 
   if (state.selected.size === 0) {
     el.dataset.view = "";
+    if (state.pendingLayerActivation) {
+      const layerName = displayLayerName(state.pendingLayerActivation.layerId);
+      const baseName = displayLayerName(state.layers[0]?.id);
+      el.innerHTML = `
+        <div class="inspect-empty"><strong>Pick a hold key for ${layerName}.</strong> Click a key on ${baseName} to bind it as a layer-tap that opens ${layerName} on hold. Click empty space to cancel.</div>
+      `;
+      return;
+    }
     el.innerHTML = `
       <div class="inspect-empty">Click a key to edit it. Click it again or click empty space to deselect. Drag to <strong>move</strong>, Alt-drag to <strong>swap</strong>, ⌘/Ctrl-drag to <strong>copy</strong>. Drag off the board to clear.${state.studio ? " Connected: supported edits go to the board immediately." : ""}</div>
       ${holdNote ? `<div>${holdNote}</div>` : ""}
@@ -1389,6 +1428,13 @@ function bindBoardDeselect() {
     if (Math.hypot(ev.clientX - bg.x, ev.clientY - bg.y) >= 6) return;
     if (keyIndexFromPoint(ev.clientX, ev.clientY) != null) return;
     clearTransientUi();
+    if (state.pendingLayerActivation) {
+      state.pendingLayerActivation = null;
+      setStatus("Layer hold-key assignment cancelled.");
+      renderKeyboard();
+      renderInspect();
+      return;
+    }
     if (state.selected.size) selectOnly(null);
   });
 }
@@ -1799,7 +1845,10 @@ function renderKeyboard() {
     rect.addEventListener("pointerdown", (ev) => startKeyDrag(ev, i));
     svg.appendChild(g);
   });
-  svg.classList.toggle("picking", !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.runtimeEditor));
+  svg.classList.toggle(
+    "picking",
+    !!(state.comboDraft || state.behaviorDraft || state.macroDraft || state.runtimeEditor || state.pendingLayerActivation)
+  );
 }
 
 function keyIndexFromPoint(clientX, clientY) {
@@ -1909,6 +1958,10 @@ function fillHoldSelects() {
 
 function startKeyDrag(ev, index) {
   ev.preventDefault();
+  if (state.pendingLayerActivation) {
+    handlePendingLayerActivationClick(index);
+    return;
+  }
   if (state.runtimeEditor) {
     handleRuntimeEditorKey(index);
     return;
