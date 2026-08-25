@@ -73,7 +73,7 @@ import {
   ReorderLayerCommand,
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
-import { connectStudio } from "../connection/studio.js";
+import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -4489,12 +4489,17 @@ async function probeRuntimeConfig(client) {
 
 // Opens the Studio connection and syncs the small set of chrome that
 // reflects "we're now talking to a keyboard." Returns the connected client,
-// or null if the user cancelled the port picker or the connection failed
-// (both already reported via setStatus/setStudioLabel before returning).
-async function establishStudioConnection() {
-  setStudioLabel("Connecting…");
+// or null if the user cancelled the port picker, nothing was there to
+// connect to, or the connection failed. In the ordinary (non-silent) case
+// cancellation/failure is also reported via setStatus/setStudioLabel before
+// returning; `silent` (used for the on-load auto-connect attempt, where
+// "no keyboard plugged in yet" is a normal outcome, not an error) skips that
+// reporting and the "Connecting…" label entirely.
+async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
+  if (!silent) setStudioLabel("Connecting…");
   try {
-    const client = await connectStudio();
+    const client = await connector();
+    if (!client) return null;
     state.studio = client;
     rememberDeviceLayers(client);
     rememberStockBindings(client);
@@ -4508,6 +4513,7 @@ async function establishStudioConnection() {
     renderCombinations();
     return client;
   } catch (err) {
+    if (silent) return null;
     if (err?.name === "NotFoundError") {
       setStudioLabel("Not connected");
       setStatus("Connect cancelled.");
@@ -6296,6 +6302,17 @@ function maybeWarnDarkReader() {
   });
 }
 
+// Reconnects silently on page load if a port from an earlier session is
+// still there to answer - getPorts()/port.open() don't need a user gesture,
+// only the picker (requestPort()) does. Loads the keyboard's live keymap
+// into the editor on success, same as a manual Connect; does nothing
+// (leaving the manual Connect button as the fallback) if no keyboard
+// answers.
+async function tryAutoConnectOnLoad() {
+  const client = await establishStudioConnection({ connector: connectKnownStudioPort, silent: true });
+  if (client) loadKeyboardIntoEditor(client);
+}
+
 function boot() {
   try {
     maybeWarnDarkReader();
@@ -6678,6 +6695,7 @@ function boot() {
       .catch((err) => {
         setStatus(`${err.message} Serve from the repo root: python3 apps/web/serve.py`);
       });
+    tryAutoConnectOnLoad().catch((err) => console.error(err));
   } catch (err) {
     setStatus(`Editor failed to start: ${err.message}`);
     console.error(err);

@@ -664,6 +664,23 @@ async function openAndHandshake(port) {
   }
 }
 
+// Tries every port already granted access in an earlier session, silently.
+// Returns null (never throws) if none exist or none answer the RPC
+// handshake, so callers - like an auto-connect on page load - can treat
+// "nothing to connect to yet" as a normal, unremarkable outcome rather than
+// an error.
+export async function connectKnownStudioPort() {
+  if (!navigator.serial) return null;
+  for (const port of await navigator.serial.getPorts()) {
+    try {
+      return await openAndHandshake(port);
+    } catch {
+      /* not the RPC port, or not reachable right now - keep looking */
+    }
+  }
+  return null;
+}
+
 export async function connectStudio() {
   if (!navigator.serial) {
     throw new Error("Web Serial is only in Chrome / Edge. Open this editor there.");
@@ -675,13 +692,8 @@ export async function connectStudio() {
   // than one - a debug console, some other future port - picking the wrong
   // one is easy. If any port was already granted access in an earlier
   // session, probe those first and skip the picker entirely on success.
-  for (const port of await navigator.serial.getPorts()) {
-    try {
-      return await openAndHandshake(port);
-    } catch {
-      /* not the RPC port, or not reachable right now - keep looking */
-    }
-  }
+  const known = await connectKnownStudioPort();
+  if (known) return known;
 
   const port = await navigator.serial.requestPort({});
   return await openAndHandshake(port);
