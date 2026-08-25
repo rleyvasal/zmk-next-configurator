@@ -314,7 +314,11 @@ export class StudioClient {
   }
 
   async handshake() {
-    const info = await this.call((id) => encodeCore(id, Fc.Request.get_device_info));
+    const info = await this.call(
+      (id) => encodeCore(id, Fc.Request.get_device_info),
+      1500,
+      "This is the console/logging port, not the Studio RPC port. Reconnect and pick the other USB serial port."
+    );
     this.deviceName = info.deviceInfo?.name || "Totem";
     const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
     if (lock.lockState === 0) {
@@ -641,11 +645,7 @@ export class StudioClient {
   }
 }
 
-export async function connectStudio() {
-  if (!navigator.serial) {
-    throw new Error("Web Serial is only in Chrome / Edge. Open this editor there.");
-  }
-  const port = await navigator.serial.requestPort({});
+async function openAndHandshake(port) {
   await port.open({ baudRate: 12500 });
   try {
     if (port.setSignals) {
@@ -662,6 +662,28 @@ export async function connectStudio() {
     await client.close();
     throw err;
   }
+}
+
+export async function connectStudio() {
+  if (!navigator.serial) {
+    throw new Error("Web Serial is only in Chrome / Edge. Open this editor there.");
+  }
+
+  // The keyboard's two USB serial functions enumerate under the identical
+  // device-level product name in Chrome's port picker (there is no
+  // per-interface string this browser API exposes), so picking the wrong one
+  // is easy. If either port was already granted access in an earlier
+  // session, probe those first and skip the picker entirely on success.
+  for (const port of await navigator.serial.getPorts()) {
+    try {
+      return await openAndHandshake(port);
+    } catch {
+      /* not the RPC port, or not reachable right now - keep looking */
+    }
+  }
+
+  const port = await navigator.serial.requestPort({});
+  return await openAndHandshake(port);
 }
 
 export function encodeSetLayerBindingForTest(requestId, layerId, keyPosition, binding) {
