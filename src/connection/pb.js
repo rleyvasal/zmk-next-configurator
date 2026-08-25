@@ -77,6 +77,11 @@ export function encodeBytes(field, bytes) {
   return concatBytes([encodeKey(field, 2), encodeVarint(bytes.length), bytes]);
 }
 
+export function encodeString(field, value) {
+  if (!value) return new Uint8Array();
+  return encodeBytes(field, new TextEncoder().encode(value));
+}
+
 export function encodeSub(field, bytes) {
   return encodeBytes(field, bytes);
 }

@@ -11,6 +11,7 @@ import {
   encodeInt32,
   encodeKey,
   encodeSint32,
+  encodeString,
   encodeSub,
   encodeUint32,
   encodeVarint,
@@ -214,6 +215,43 @@ function parseResponse(bytes) {
       }
     }
     if (fieldU32(keymap, Fk.Response.save_changes) && !save) out.saveOk = true;
+
+    const moveLayer = fieldMsgs(keymap, Fk.Response.move_layer)[0];
+    if (moveLayer) {
+      const ok = fieldMsgs(moveLayer, Fk.MoveLayerResponse.ok)[0];
+      if (ok) out.moveLayer = parseKeymap(ok);
+      else out.moveLayerErr = fieldU32(moveLayer, Fk.MoveLayerResponse.err);
+    }
+
+    const addLayer = fieldMsgs(keymap, Fk.Response.add_layer)[0];
+    if (addLayer) {
+      const ok = fieldMsgs(addLayer, Fk.AddLayerResponse.ok)[0];
+      if (ok) {
+        out.addLayer = {
+          index: fieldU32(ok, Fk.AddLayerResponseDetails.index),
+          layer: parseLayer(fieldMsgs(ok, Fk.AddLayerResponseDetails.layer)[0] || new Map()),
+        };
+      } else out.addLayerErr = fieldU32(addLayer, Fk.AddLayerResponse.err);
+    }
+
+    const removeLayer = fieldMsgs(keymap, Fk.Response.remove_layer)[0];
+    if (removeLayer) {
+      if (!fieldMsgs(removeLayer, Fk.RemoveLayerResponse.ok).length) {
+        out.removeLayerErr = fieldU32(removeLayer, Fk.RemoveLayerResponse.err);
+      }
+    }
+
+    const restoreLayer = fieldMsgs(keymap, Fk.Response.restore_layer)[0];
+    if (restoreLayer) {
+      const ok = fieldMsgs(restoreLayer, Fk.RestoreLayerResponse.ok)[0];
+      if (ok) out.restoreLayer = parseLayer(ok);
+      else out.restoreLayerErr = fieldU32(restoreLayer, Fk.RestoreLayerResponse.err);
+    }
+
+    // SetLayerPropsResponse is a bare enum on the wire, like set_layer_binding.
+    if (fieldNums(keymap, Fk.Response.set_layer_props).length) {
+      out.setLayerProps = fieldU32(keymap, Fk.Response.set_layer_props);
+    }
   }
   if (runtimeConfig) out.runtimeConfig = decodeRuntimeResponse(runtimeConfig);
   return out;
@@ -342,8 +380,75 @@ export class StudioClient {
   async getKeymap() {
     const km = await this.call((id) => encodeKeymap(id, Fk.Request.get_keymap), 10000);
     this.layers = km.keymap?.layers || [];
+    this.availableLayers = km.keymap?.availableLayers ?? 0;
     this.inferredBehaviors = rememberStudioBehaviors(this.behaviors, this.layers);
     return this.layers;
+  }
+
+  async addLayer() {
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.add_layer));
+    if (resp.addLayerErr) {
+      const reason = ["ok", "generic", "no-space"][resp.addLayerErr] || String(resp.addLayerErr);
+      return { ok: false, reason };
+    }
+    await this.getKeymap();
+    return { ok: true, index: resp.addLayer.index, layerId: resp.addLayer.layer.id };
+  }
+
+  async moveLayer(startIndex, destIndex) {
+    const body = concatBytes([
+      encodeUint32(Fk.MoveLayerRequest.start_index, startIndex),
+      encodeUint32(Fk.MoveLayerRequest.dest_index, destIndex),
+    ]);
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.move_layer, body));
+    if (resp.moveLayerErr) {
+      const reason =
+        ["ok", "generic", "invalid-layer", "invalid-destination"][resp.moveLayerErr] || String(resp.moveLayerErr);
+      return { ok: false, reason };
+    }
+    this.layers = resp.moveLayer?.layers || this.layers;
+    return { ok: true };
+  }
+
+  async removeLayer(layerIndex) {
+    const body = encodeUint32(Fk.RemoveLayerRequest.layer_index, layerIndex);
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.remove_layer, body));
+    if (resp.removeLayerErr) {
+      const reason = ["ok", "generic", "invalid-index"][resp.removeLayerErr] || String(resp.removeLayerErr);
+      return { ok: false, reason };
+    }
+    await this.getKeymap();
+    return { ok: true };
+  }
+
+  async restoreLayer(layerId, atIndex) {
+    const body = concatBytes([
+      encodeUint32(Fk.RestoreLayerRequest.layer_id, layerId),
+      encodeUint32(Fk.RestoreLayerRequest.at_index, atIndex),
+    ]);
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.restore_layer, body));
+    if (resp.restoreLayerErr) {
+      const reason =
+        ["ok", "generic", "invalid-id", "invalid-index"][resp.restoreLayerErr] || String(resp.restoreLayerErr);
+      return { ok: false, reason };
+    }
+    await this.getKeymap();
+    return { ok: true, layer: resp.restoreLayer };
+  }
+
+  async setLayerProps(layerId, name) {
+    const body = concatBytes([
+      encodeUint32(Fk.SetLayerPropsRequest.layer_id, layerId),
+      encodeString(Fk.SetLayerPropsRequest.name, name),
+    ]);
+    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.set_layer_props, body));
+    if (resp.setLayerProps) {
+      const reason = ["ok", "generic", "invalid-id"][resp.setLayerProps] || String(resp.setLayerProps);
+      return { ok: false, reason };
+    }
+    const layer = this.layers.find((l) => l.id === layerId);
+    if (layer) layer.name = name;
+    return { ok: true };
   }
 
   async setBinding(layerIndex, keyPosition, text, layers = this.layers) {

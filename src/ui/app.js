@@ -199,6 +199,96 @@ const liveQueue = [];
 let liveBusy = false;
 let runtimeIdleWatch = 0;
 
+// Layer structure changes (add/move/remove/rename) go through the stock
+// Studio Keymap RPC subsystem - a separate wire subsystem from per-key
+// bindings above, so this is an independent queue/lock pair rather than
+// reusing liveQueue/liveBusy.
+const layerLiveQueue = [];
+let layerLiveBusy = false;
+
+function queueLiveLayerOp(job) {
+  if (!state.studio) return;
+  layerLiveQueue.push(job);
+  pumpLayerLive();
+}
+
+async function pumpLayerLive() {
+  if (layerLiveBusy || !state.studio) return;
+  layerLiveBusy = true;
+  while (layerLiveQueue.length && state.studio) {
+    const job = layerLiveQueue.shift();
+    try {
+      switch (job.kind) {
+        case "add": {
+          if ((state.studio.availableLayers ?? 1) <= 0) {
+            showFlashNeeded("layer", job.name, {
+              line: "This keyboard has no free layer slot — add reserved layers in firmware for headroom.",
+            });
+            break;
+          }
+          const added = await state.studio.addLayer();
+          if (!added.ok) {
+            showFlashNeeded("layer", job.name, {
+              line:
+                added.reason === "no-space"
+                  ? "This keyboard has no free layer slot — download the keymap and flash to add more."
+                  : `Live add failed (${added.reason}) — download the keymap and flash.`,
+            });
+            break;
+          }
+          await state.studio.setLayerProps(added.layerId, job.name);
+          await state.studio.save();
+          renderLayers();
+          updateFlashBanner();
+          setStatus(`${job.name} added live and written to the board.`);
+          break;
+        }
+        case "rename": {
+          const result = await state.studio.setLayerProps(job.studioLayerId, job.name);
+          if (!result.ok) {
+            setStatus(`On-board rename failed: ${result.reason}.`);
+            break;
+          }
+          await state.studio.save();
+          setStatus(`Renamed live: ${job.name}.`);
+          break;
+        }
+        case "move": {
+          const result = await state.studio.moveLayer(job.studioFrom, job.studioTo);
+          if (!result.ok) {
+            setStatus(
+              `On-board move failed (${result.reason}) — editor and device order now differ; download and flash to resync.`
+            );
+            break;
+          }
+          await state.studio.save();
+          renderLayers();
+          updateFlashBanner();
+          setStatus(`Moved ${job.name} live.`);
+          break;
+        }
+        case "remove": {
+          const result = await state.studio.removeLayer(job.studioIdx);
+          if (!result.ok) {
+            showFlashNeeded("layer-delete", job.name, {
+              line: `Live remove failed (${result.reason}) — download the keymap and flash.`,
+            });
+            break;
+          }
+          await state.studio.save();
+          renderLayers();
+          updateFlashBanner();
+          setStatus(`${job.name} removed live and written to the board.`);
+          break;
+        }
+      }
+    } catch (err) {
+      setStatus(err.message);
+    }
+  }
+  layerLiveBusy = false;
+}
+
 function stopRuntimeIdleWatch() {
   if (runtimeIdleWatch) {
     clearInterval(runtimeIdleWatch);
@@ -460,7 +550,8 @@ function createLayer(after = state.layers.length - 1) {
     () => {
       state.layerRename = at;
       afterLayerChange();
-      showFlashNeeded("layer", displayLayerName(id));
+      if (state.studio) queueLiveLayerOp({ kind: "add", name: displayLayerName(id) });
+      else showFlashNeeded("layer", displayLayerName(id));
     }
   );
 }
@@ -510,6 +601,8 @@ function renameLayer(index, raw) {
     return;
   }
   const fromId = layer.id;
+  const studioIdx = studioLayerIndex(index);
+  const studioLayerId = studioIdx != null ? state.studio.layers[studioIdx].id : null;
   runHistory(
     new RenameLayerCommand(layerHost, {
       index,
@@ -520,7 +613,11 @@ function renameLayer(index, raw) {
     () => {
       state.layerRename = null;
       afterLayerChange();
-      setStatus(`Renamed to ${displayLayerName(id)}.`);
+      if (state.studio && studioLayerId != null) {
+        queueLiveLayerOp({ kind: "rename", studioLayerId, name: displayLayerName(id) });
+      } else {
+        setStatus(`Renamed to ${displayLayerName(id)}.`);
+      }
     }
   );
 }
@@ -565,6 +662,7 @@ function deleteLayer(index) {
     edited: c.edited,
     deleted: c.deleted,
   }));
+  const studioIdx = studioLayerIndex(index);
   runHistory(
     new DeleteLayerCommand(layerHost, {
       index,
@@ -575,7 +673,15 @@ function deleteLayer(index) {
     }),
     () => {
       afterLayerChange();
-      showFlashNeeded("layer-delete", name);
+      if (state.studio && studioIdx === 0) {
+        showFlashNeeded("layer-delete", name, {
+          line: "The board's default layer can't be removed live. Download the keymap and flash to remove it.",
+        });
+      } else if (state.studio && studioIdx != null) {
+        queueLiveLayerOp({ kind: "remove", studioIdx, name });
+      } else {
+        showFlashNeeded("layer-delete", name);
+      }
     }
   );
 }
@@ -583,11 +689,17 @@ function deleteLayer(index) {
 function reorderLayer(from, to) {
   if (from === to || from < 0 || to < 0 || from >= state.layers.length || to >= state.layers.length) return;
   const name = displayLayerName(state.layers[from].id);
+  const studioFrom = studioLayerIndex(from);
+  const studioTo = studioLayerIndex(to);
   runHistory(
     new ReorderLayerCommand(layerHost, { from, to, description: `Reorder ${name}` }),
     () => {
       afterLayerChange();
-      setStatus(`Moved ${name} to index ${to}.`);
+      if (state.studio && studioFrom != null && studioTo != null && studioFrom !== studioTo) {
+        queueLiveLayerOp({ kind: "move", studioFrom, studioTo, name });
+      } else {
+        setStatus(`Moved ${name} to index ${to}.`);
+      }
     }
   );
 }
@@ -4326,12 +4438,12 @@ function extraEditorLayers() {
 const FLASH_COPY = {
   layer: {
     title: (n) => (n ? `Added ${n}.` : "New layer."),
-    line: "New layers cannot be applied live.",
+    line: "Not connected — download the keymap and flash to add this layer to your board.",
     status: "New layer — download keymap and flash",
   },
   "layer-delete": {
     title: (n) => (n ? `Deleted ${n}.` : "Layer removed."),
-    line: "Layer count is fixed at compile time.",
+    line: "Not connected — download the keymap and flash to remove this layer from your board.",
     status: "Layer removed — download keymap and flash",
   },
   macro: {
