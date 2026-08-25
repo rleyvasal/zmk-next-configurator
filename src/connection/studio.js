@@ -674,8 +674,12 @@ export async function connectKnownStudioPort() {
   for (const port of await navigator.serial.getPorts()) {
     try {
       return await openAndHandshake(port);
-    } catch {
-      /* not the RPC port, or not reachable right now - keep looking */
+    } catch (err) {
+      // Not the RPC port, or not reachable right now - keep looking. Logged
+      // (not swallowed silently) since a previously-working known port that
+      // stops answering is exactly the kind of thing worth being able to
+      // see in devtools instead of just falling back to the picker unexplained.
+      console.debug("connectKnownStudioPort: a known port didn't answer", port.getInfo?.(), err);
     }
   }
   return null;
