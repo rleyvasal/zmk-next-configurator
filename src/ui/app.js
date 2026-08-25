@@ -4726,7 +4726,7 @@ function loadKeyboardIntoEditor(client) {
     !window.confirm("Load from the keyboard and discard editor changes, including any layers not on the board?")
   ) {
     updateChrome();
-    setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply to keyboard to push them.`);
+    setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply loaded config to keyboard to push them.`);
     return;
   }
   const loaded = loadEditorFromKeyboard(client, { replace: true });
@@ -5865,7 +5865,7 @@ function saveRuntimeEditor() {
     setDirty(true);
     renderCombinations();
     renderInspect();
-    setStatus(`${type === "combo" ? "Combo" : "Runtime object"} ${form.id} saved in the local draft. Apply to keyboard to persist it.`);
+    setStatus(`${type === "combo" ? "Combo" : "Runtime object"} ${form.id} saved in the local draft. Apply loaded config to keyboard to persist it.`);
   } catch (error) {
     setStatus(error.message);
   }
@@ -5894,7 +5894,7 @@ function deleteRuntimeEditorItem(item) {
     setDirty(true);
     renderCombinations();
     renderKeyboard();
-    setStatus(`${item.type === "combo" ? "Combo" : "Runtime object"} ${item.id} removed from the local draft. Apply to keyboard to persist.`);
+    setStatus(`${item.type === "combo" ? "Combo" : "Runtime object"} ${item.id} removed from the local draft. Apply loaded config to keyboard to persist.`);
   } catch (error) {
     setStatus(error.message);
   }
