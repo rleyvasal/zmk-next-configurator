@@ -4692,6 +4692,10 @@ async function probeRuntimeConfig(client) {
       // An older Runtime Config v1 build can understand the RPC but cannot
       // safely translate the editor's selected layout into stock positions.
       // Keep the established Studio path available instead of guessing.
+      console.warn(
+        "[probeRuntimeConfig] key-count mismatch, Runtime Config disabled for this session:",
+        { keyCount, selectedPositionCount: capabilities.selectedPositionCount, selectedToStockPositionsLength: capabilities.selectedToStockPositions?.length }
+      );
       return null;
     }
     return {
@@ -4700,9 +4704,12 @@ async function probeRuntimeConfig(client) {
       status: config.status,
       draft: createRuntimeDraft(config.snapshot),
     };
-  } catch {
+  } catch (err) {
     // Runtime Config is an optional ZMK Next subsystem. Ordinary Studio
-    // firmware deliberately keeps its existing connection path untouched.
+    // firmware deliberately keeps its existing connection path untouched -
+    // but a real, transient RPC failure looks identical from here, so log it
+    // rather than staying silent.
+    console.warn("[probeRuntimeConfig] threw, Runtime Config disabled for this session:", err);
     return null;
   }
 }
