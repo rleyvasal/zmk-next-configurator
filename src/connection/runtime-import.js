@@ -391,7 +391,14 @@ function importCombo(draft, combo, capabilities, encodeOpts, fileToRuntime) {
   );
   try {
     const merged = mergeCombo(draft, {
-      keyPositions: positions,
+      // `positions` are editor/selected-layout indices, not firmware stock
+      // positions - selectedPositions is what actually triggers the
+      // selected->stock translation in normalizeRuntimeCombo (runtime-draft.js).
+      // keyPositions here would silently skip that translation and send raw
+      // editor indices mislabeled as stock positions, which the firmware
+      // can't map back to a real key - the combo would validate and "apply"
+      // successfully but never actually fire on hardware.
+      selectedPositions: positions,
       timeoutMs: Number(combo.timeout) || 50,
       slowRelease: !!combo.slowRelease,
       requirePriorIdleMs: 0,

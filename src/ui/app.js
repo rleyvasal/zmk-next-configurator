@@ -152,6 +152,11 @@ function inspectBehaviorValue(model) {
 const state = {
   original: "",
   profile: null,
+  // Set only by an explicit Load from File / Load from GitHub action (never
+  // by the startup sample or a device auto-load) - gates "Apply loaded
+  // config to keyboard", which is meant specifically for pushing a config
+  // you just loaded, by design not for pushing standalone live edits.
+  configLoaded: false,
   keymapPath: "keymap.keymap",
   layers: [],
   combos: [],
@@ -392,7 +397,7 @@ function updateChrome() {
   if (bar) bar.dataset.source = state.source || "file";
   if (barText) barText.textContent = sourceStatusText();
   const apply = $("studio-apply");
-  if (apply) apply.disabled = !state.studio;
+  if (apply) apply.disabled = !state.studio || !state.configLoaded;
 }
 
 function setSync(next) {
@@ -430,7 +435,7 @@ function setStudioLabel(text, kind = "") {
 
 function updateStudioButtons() {
   const on = !!state.studio;
-  $("studio-apply").disabled = !on;
+  $("studio-apply").disabled = !on || !state.configLoaded;
   const hint = $("live-hint");
   if (hint) {
     hint.innerHTML = state.runtime
@@ -3315,8 +3320,15 @@ function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [
 }
 
 function announceSavedCombination(kind, item, { created } = {}) {
+  // A combo whose output is an existing macro needs that macro pushed
+  // alongside it - otherwise the combo's action can't be resolved and the
+  // whole import is skipped, even though the pairing is fully representable.
+  const linkedMacro =
+    kind === "combo" && item
+      ? state.macros.find((m) => !m.deleted && m.id === comboLinkedMacroId(item, state.macros.filter((x) => !x.deleted).map((x) => x.id)))
+      : null;
   const runtime = pushSavedCombinationToRuntime({
-    macros: kind === "macro" && item ? [item] : [],
+    macros: kind === "macro" && item ? [item] : linkedMacro ? [linkedMacro] : [],
     combos: kind === "combo" && item ? [item] : [],
     behaviors: (kind === "hold-tap" || kind === "behavior") && item ? [item] : [],
   });
@@ -3642,7 +3654,15 @@ function deleteCombo(combo) {
     renderCombos();
     renderInspect();
   }
-  showFlashNeeded("params", comboTitle(combo), { created: false });
+  // A deleted combo just stops appearing in the next liveComboImports() pass -
+  // Runtime Config can represent that, unless this combo is one of the
+  // stock/compiled behaviors (reset, studio_unlock, ...) that were never a
+  // Runtime Config object in the first place and can't be un-compiled live.
+  if (state.runtime && !isUnsafeLiveComboBinding(combo.binding)) {
+    setStatus(`${comboTitle(combo)} deleted. Apply loaded config to keyboard to push this live.`);
+  } else {
+    showFlashNeeded("params", comboTitle(combo), { created: false });
+  }
 }
 
 function toggleComboKey(index) {
@@ -4059,7 +4079,14 @@ function deleteMacro(macro) {
   if (state.combinationDraft?.source?.item === macro) closeCombinationBuilder();
   else closeMacroEditor();
   renderPalette();
-  showFlashNeeded("params", `&${macro.id}`, { created: false });
+  // Only a macro created fresh via Runtime Config (macro.added) can actually
+  // be removed live by omitting it from the next snapshot - a stock macro
+  // compiled into the original keymap source can't be un-compiled either way.
+  if (state.runtime && macro.added) {
+    setStatus(`&${macro.id} deleted. Apply loaded config to keyboard to push this live.`);
+  } else {
+    showFlashNeeded("params", `&${macro.id}`, { created: false });
+  }
 }
 
 function placeMacroOnKey(index) {
@@ -4868,6 +4895,7 @@ async function applyRuntimeAll() {
   }
 
   let draft;
+  let comboImportSkipped = [];
   try {
     draft = overlayFromDirtyKeys(state.runtime.snapshot);
     draft.runtimeObjects = [];
@@ -4889,6 +4917,11 @@ async function applyRuntimeAll() {
           imported.skipped
         );
       }
+      // A partial skip (some items imported, some not) doesn't throw above,
+      // so without capturing this it would otherwise vanish silently once
+      // `imported` goes out of scope - the exact way the combo/macro bug got
+      // missed after a fully "successful" Apply.
+      comboImportSkipped = imported.skipped || [];
       draft = imported.draft;
     }
     const local = state.runtime.draft;
@@ -4951,8 +4984,14 @@ async function applyRuntimeAll() {
       : "") +
     (skippedBindings.length
       ? `\n\n${skippedBindings.length} key${skippedBindings.length === 1 ? "" : "s"} stay firmware-compiled because Studio cannot encode them live (mouse-move/scroll, custom behaviors such as &host_log_dump, …).`
+      : "") +
+    (comboImportSkipped.length
+      ? `\n\n${comboImportSkipped.length} combo/macro item${comboImportSkipped.length === 1 ? "" : "s"} could not be added: ${comboImportSkipped.map((item) => `${item.kind} ${item.id} (${item.reason})`).join("; ")}.`
       : "");
-  if ((state.settings.confirmApply || skipped.length || skippedBindings.length || over) && !window.confirm(prompt)) {
+  if (
+    (state.settings.confirmApply || skipped.length || skippedBindings.length || comboImportSkipped.length || over) &&
+    !window.confirm(prompt)
+  ) {
     setStatus("Apply cancelled.");
     return;
   }
@@ -6024,6 +6063,8 @@ async function loadPickedKeymapFile(file) {
       const parsed = JSON.parse(trimmed);
       if (isRuntimeDocument(parsed)) {
         importRuntimeDocumentText(parsed);
+        state.configLoaded = true;
+        updateChrome();
         return;
       }
     } catch (error) {
@@ -6032,6 +6073,8 @@ async function loadPickedKeymapFile(file) {
   }
   await ensureLayout();
   loadKeymapText(text, file.name);
+  state.configLoaded = true;
+  updateChrome();
 }
 
 function saveKeymap() {
@@ -6254,6 +6297,8 @@ async function applyDiscoveredRepo() {
     state.githubRef = null;
     loadKeymapText(text, kmPath, "file");
   }
+  state.configLoaded = true;
+  updateChrome();
   closeRepoDiscover();
 }
 
