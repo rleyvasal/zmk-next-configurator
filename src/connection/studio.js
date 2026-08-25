@@ -386,7 +386,14 @@ export class StudioClient {
   }
 
   async addLayer() {
-    const resp = await this.call((id) => encodeKeymap(id, Fk.Request.add_layer));
+    // AddLayerRequest is an empty MESSAGE in the oneof, not a bool.
+    // encodeKeymap's empty-body fallback assumes a bool field (right for
+    // get_keymap/save_changes/etc., all real bool fields) - for a message
+    // field that has to stay an explicit tag + zero-length submessage even
+    // when empty, or the firmware never recognizes the oneof case at all
+    // and the request just times out with no response.
+    const emptyAddLayer = concatBytes([encodeKey(Fk.Request.add_layer, 2), encodeVarint(0)]);
+    const resp = await this.call((id) => encodeRequest(id, Fs.Request.keymap, emptyAddLayer));
     if (resp.addLayerErr) {
       const reason = ["ok", "generic", "no-space"][resp.addLayerErr] || String(resp.addLayerErr);
       return { ok: false, reason };
