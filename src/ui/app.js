@@ -4679,38 +4679,51 @@ function warnLiveOnce() {
   setStudioLabel("Connected · settings written", "on");
 }
 
+async function attemptProbeRuntimeConfig(client, { capsTimeoutMs, configTimeoutMs }) {
+  const capabilities = await client.getRuntimeCapabilities({ timeoutMs: capsTimeoutMs });
+  const config = await client.getRuntimeConfig({ timeoutMs: configTimeoutMs });
+  const keyCount = client.layers?.[0]?.bindings?.length || 0;
+  if (
+    !keyCount ||
+    capabilities.selectedPositionCount !== keyCount ||
+    capabilities.selectedToStockPositions?.length !== keyCount
+  ) {
+    // An older Runtime Config v1 build can understand the RPC but cannot
+    // safely translate the editor's selected layout into stock positions.
+    // Keep the established Studio path available instead of guessing.
+    console.warn(
+      "[probeRuntimeConfig] key-count mismatch, Runtime Config disabled for this session:",
+      { keyCount, selectedPositionCount: capabilities.selectedPositionCount, selectedToStockPositionsLength: capabilities.selectedToStockPositions?.length }
+    );
+    return null;
+  }
+  return {
+    capabilities,
+    snapshot: config.snapshot,
+    status: config.status,
+    draft: createRuntimeDraft(config.snapshot),
+  };
+}
+
 async function probeRuntimeConfig(client) {
   try {
-    const capabilities = await client.getRuntimeCapabilities({ timeoutMs: 1500 });
-    const config = await client.getRuntimeConfig({ timeoutMs: 3000 });
-    const keyCount = client.layers?.[0]?.bindings?.length || 0;
-    if (
-      !keyCount ||
-      capabilities.selectedPositionCount !== keyCount ||
-      capabilities.selectedToStockPositions?.length !== keyCount
-    ) {
-      // An older Runtime Config v1 build can understand the RPC but cannot
-      // safely translate the editor's selected layout into stock positions.
-      // Keep the established Studio path available instead of guessing.
-      console.warn(
-        "[probeRuntimeConfig] key-count mismatch, Runtime Config disabled for this session:",
-        { keyCount, selectedPositionCount: capabilities.selectedPositionCount, selectedToStockPositionsLength: capabilities.selectedToStockPositions?.length }
-      );
+    return await attemptProbeRuntimeConfig(client, { capsTimeoutMs: 1500, configTimeoutMs: 3000 });
+  } catch (err) {
+    // Runtime Config is an optional ZMK Next subsystem, so a failure here is
+    // ordinarily just "this firmware doesn't have it" - but the same short
+    // timeouts that keep that fallback fast can also fire on a genuinely
+    // Runtime-Config-capable board that's momentarily slow (e.g. right after
+    // a reconnect, or with a large snapshot after a lot of live editing).
+    // One retry with more generous timeouts tells those two cases apart
+    // without slowing down the common "not supported" path, which fails the
+    // same way on the retry too.
+    console.warn("[probeRuntimeConfig] first attempt threw, retrying with longer timeouts:", err);
+    try {
+      return await attemptProbeRuntimeConfig(client, { capsTimeoutMs: 4000, configTimeoutMs: 6000 });
+    } catch (retryErr) {
+      console.warn("[probeRuntimeConfig] retry also threw, Runtime Config disabled for this session:", retryErr);
       return null;
     }
-    return {
-      capabilities,
-      snapshot: config.snapshot,
-      status: config.status,
-      draft: createRuntimeDraft(config.snapshot),
-    };
-  } catch (err) {
-    // Runtime Config is an optional ZMK Next subsystem. Ordinary Studio
-    // firmware deliberately keeps its existing connection path untouched -
-    // but a real, transient RPC failure looks identical from here, so log it
-    // rather than staying silent.
-    console.warn("[probeRuntimeConfig] threw, Runtime Config disabled for this session:", err);
-    return null;
   }
 }
 
