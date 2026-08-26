@@ -4377,6 +4377,9 @@ function deleteBehavior(behavior) {
   if (state.combinationDraft?.source?.item === behavior) closeCombinationBuilder();
   else closeBehaviorEditor();
   renderPalette();
+  renderKeyboard();
+  renderInspect();
+  renderCombinations();
   showFlashNeeded("params", `&${behavior.id}`, { created: false });
 }
 
