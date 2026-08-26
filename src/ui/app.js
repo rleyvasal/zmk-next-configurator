@@ -5351,6 +5351,10 @@ function runtimeCombinationEntries() {
     });
   }
   for (const combo of draft.combos) {
+    // A suppress-compiled marker is bookkeeping, not something to manage as
+    // its own item - it disappears the same way it appeared (delete on the
+    // stock combo it targets), or all at once via "Restore stock".
+    if (combo.output?.suppressCompiled) continue;
     const selected = stockPositionsToSelectedIndexes(caps, combo.keyPositions);
     items.push({
       runtime: true,
@@ -5358,9 +5362,7 @@ function runtimeCombinationEntries() {
       id: combo.id,
       positions: selected,
       title: selected.map((index) => comboKeyCaption(index)).join(" + ") || `Combo ${combo.id}`,
-      detail: combo.output?.suppressCompiled
-        ? "suppressed"
-        : prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
+      detail: prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
       tint: "kind-combo",
       source: combo,
     });
