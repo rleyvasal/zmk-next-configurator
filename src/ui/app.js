@@ -101,7 +101,6 @@ import {
   runtimeResourceUsage,
   stockToSelectedIndex,
   stockPositionsToSelectedIndexes,
-  selectedIndexesToStock,
   runtimeComboActiveOnLayer,
   comboLayersFromMask,
   supportedRuntimeEditorTypes,
@@ -2419,27 +2418,6 @@ function renderCombinations() {
       });
       chip.appendChild(x);
     }
-    if (
-      item.type === "combo" &&
-      state.runtime &&
-      capabilitySupportsComboSuppression(state.runtime.capabilities) &&
-      isUnsafeLiveComboBinding(item.source?.binding)
-    ) {
-      const suppressed = !!findSuppressedComboEntry(item.source);
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "combo-suppress";
-      toggle.textContent = suppressed ? "Restore" : "Suppress";
-      toggle.title = suppressed
-        ? `Let ${item.title} fire again on the keyboard`
-        : `Suppress ${item.title} live, without reflashing`;
-      toggle.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (suppressed) restoreSuppressedCombo(item.source);
-        else suppressCombo(item.source);
-      });
-      chip.appendChild(toggle);
-    }
     chip.addEventListener("click", () => openCombinationItem(item));
     wrap.appendChild(chip);
   }
@@ -3735,8 +3713,28 @@ function saveComboDialog() {
   showFlashNeeded("combo", slugComboId(name, positions) || "combo", { created: !!draft.isNew });
 }
 
+// Recovery combos are deliberately position-only with no dependency on
+// runtime state, so they still work if the keyboard wedges. Deleting one
+// live removes that safety net until "Restore stock" or a reflash brings it
+// back - worth a stronger warning than an ordinary stock combo like the log
+// dump, which just deletes like any other combo.
+function isRecoveryComboBinding(text) {
+  return /sys_reset|bootloader|&rst\b|&reset\b/i.test(String(text || ""));
+}
+
 async function deleteCombo(combo) {
   if (!combo || combo.guarded) return;
+  const unsafe = isUnsafeLiveComboBinding(combo.binding);
+  if (state.runtime && unsafe && isRecoveryComboBinding(combo.binding)) {
+    if (
+      !window.confirm(
+        `${comboTitle(combo)} is a last-resort recovery combo with no dependency on runtime state, so it still works if the keyboard wedges. Deleting it live removes that safety net until you use "Restore stock" or reflash. This only affects whatever combo actually occupies these positions in your currently loaded file - if that doesn't match what's flashed, nothing will happen. Delete anyway?`
+      )
+    ) {
+      setStatus("Delete cancelled.");
+      return;
+    }
+  }
   combo.deleted = true;
   setDirty(true);
   if (state.combinationDraft?.source?.item === combo) closeCombinationBuilder();
@@ -3746,122 +3744,60 @@ async function deleteCombo(combo) {
     renderCombos();
     renderInspect();
   }
+  if (!state.runtime) {
+    setStatus(`${comboTitle(combo)} deleted.`);
+    return;
+  }
   // A stock/compiled combo (reset, studio_unlock, ...) was never a Runtime
-  // Config object to begin with, so it can't be un-compiled live.
-  if (state.runtime && !isUnsafeLiveComboBinding(combo.binding)) {
-    if (combo.runtimeComboId != null) {
-      try {
-        state.runtime.draft = deleteRuntimeCombo(state.runtime.draft, combo.runtimeComboId);
-      } catch {
-        // Already gone from the draft - nothing left to push.
-      }
-      const live = await commitRuntimeDraftLive(state.runtime.draft);
-      setStatus(
-        live.ok
-          ? `${comboTitle(combo)} deleted and removed from the keyboard.`
-          : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
-      );
-    } else {
-      setStatus(`${comboTitle(combo)} deleted.`);
+  // Config object to begin with - deleting it live means staging a
+  // suppress-compiled marker at the same positions instead of an ordinary
+  // delete. "Restore stock" brings it (and everything else) back.
+  if (unsafe) {
+    if (!capabilitySupportsComboSuppression(state.runtime.capabilities)) {
+      showFlashNeeded("params", comboTitle(combo), { created: false });
+      return;
     }
-  } else {
-    showFlashNeeded("params", comboTitle(combo), { created: false });
-  }
-}
-
-// Recovery combos are deliberately position-only with no dependency on
-// runtime state, so they still work if the keyboard wedges. Suppressing one
-// removes that safety net until it's restored or the board is reflashed -
-// worth a stronger warning than an ordinary stock combo like the log dump.
-function isRecoveryComboBinding(text) {
-  return /sys_reset|bootloader|&rst\b|&reset\b/i.test(String(text || ""));
-}
-
-function suppressedComboEntry(stockPositions) {
-  const key = stockPositions.slice().sort((a, b) => a - b).join(",");
-  return (
-    (state.runtime?.draft?.combos || []).find((c) => {
-      if (!c.output?.suppressCompiled) return false;
-      return (c.keyPositions || []).slice().sort((a, b) => a - b).join(",") === key;
-    }) || null
-  );
-}
-
-function findSuppressedComboEntry(combo) {
-  if (!state.runtime?.capabilities || !Array.isArray(combo?.positions)) return null;
-  try {
-    return suppressedComboEntry(selectedIndexesToStock(state.runtime.capabilities, combo.positions));
-  } catch {
-    return null;
-  }
-}
-
-async function suppressCombo(combo) {
-  if (!combo || !state.runtime) return;
-  const capabilities = state.runtime.capabilities;
-  if (!capabilitySupportsComboSuppression(capabilities)) {
-    setStatus("This firmware does not support live combo suppression.");
-    return;
-  }
-  const recovery = isRecoveryComboBinding(combo.binding);
-  const groundTruthNote =
-    "This only affects whatever combo actually occupies these positions in your currently loaded file - if that doesn't match what's flashed, nothing will happen.";
-  const warning = recovery
-    ? `${comboTitle(combo)} is a last-resort recovery combo with no dependency on runtime state, so it still works if the keyboard wedges. Suppressing it live removes that safety net until you restore it or reflash. ${groundTruthNote} Suppress anyway?`
-    : `Suppress ${comboTitle(combo)} live? ${groundTruthNote} You can restore it later.`;
-  if (!window.confirm(warning)) {
-    setStatus("Suppress cancelled.");
-    return;
-  }
-  let draft;
-  try {
-    draft = upsertRuntimeCombo(
-      state.runtime.draft,
-      {
-        id: nextRuntimeComboId(state.runtime.draft),
-        selectedPositions: combo.positions,
-        timeoutMs: 50,
-        output: { suppressCompiled: true },
-      },
-      capabilities,
-      runtimeEncodeOpts()
+    let draft;
+    try {
+      draft = upsertRuntimeCombo(
+        state.runtime.draft,
+        {
+          id: nextRuntimeComboId(state.runtime.draft),
+          selectedPositions: combo.positions,
+          timeoutMs: 50,
+          output: { suppressCompiled: true },
+        },
+        state.runtime.capabilities,
+        runtimeEncodeOpts()
+      );
+    } catch (error) {
+      setStatus(error.message);
+      return;
+    }
+    state.runtime.draft = draft;
+    const live = await commitRuntimeDraftLive(state.runtime.draft);
+    setStatus(
+      live.ok
+        ? `${comboTitle(combo)} deleted and removed from the keyboard.`
+        : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
     );
-  } catch (error) {
-    setStatus(error.message);
     return;
   }
-  state.runtime.draft = draft;
-  renderCombinations();
-  const live = await commitRuntimeDraftLive(state.runtime.draft);
-  setStatus(
-    live.ok
-      ? `${comboTitle(combo)} suppressed on the keyboard.`
-      : `${comboTitle(combo)} staged as suppressed, but pushing it to the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
-  );
-}
-
-async function restoreSuppressedCombo(combo) {
-  if (!combo || !state.runtime) return;
-  const entry = findSuppressedComboEntry(combo);
-  if (!entry) {
-    setStatus(`${comboTitle(combo)} is not currently suppressed.`);
-    return;
+  if (combo.runtimeComboId != null) {
+    try {
+      state.runtime.draft = deleteRuntimeCombo(state.runtime.draft, combo.runtimeComboId);
+    } catch {
+      // Already gone from the draft - nothing left to push.
+    }
+    const live = await commitRuntimeDraftLive(state.runtime.draft);
+    setStatus(
+      live.ok
+        ? `${comboTitle(combo)} deleted and removed from the keyboard.`
+        : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
+    );
+  } else {
+    setStatus(`${comboTitle(combo)} deleted.`);
   }
-  let draft;
-  try {
-    draft = deleteRuntimeCombo(state.runtime.draft, entry.id);
-  } catch (error) {
-    setStatus(error.message);
-    return;
-  }
-  state.runtime.draft = draft;
-  renderCombinations();
-  const live = await commitRuntimeDraftLive(state.runtime.draft);
-  setStatus(
-    live.ok
-      ? `${comboTitle(combo)} restored on the keyboard.`
-      : `${comboTitle(combo)} un-suppressed locally, but pushing it to the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
-  );
 }
 
 function toggleComboKey(index) {
