@@ -91,6 +91,7 @@ import {
   replaceDraftKeymapOverrides,
   actionFromBindingText,
   bindingsMatchForOverlay,
+  capabilitySupportsComboSuppression,
   runtimeBindingText,
   runtimeIssuesFromDiagnostics,
   runtimeIssuesFromDraftError,
@@ -100,6 +101,7 @@ import {
   runtimeResourceUsage,
   stockToSelectedIndex,
   stockPositionsToSelectedIndexes,
+  selectedIndexesToStock,
   runtimeComboActiveOnLayer,
   comboLayersFromMask,
   supportedRuntimeEditorTypes,
@@ -1505,6 +1507,9 @@ function comboBadgeLettersByPosition() {
     addPositions(c.positions, nextLetter());
   }
   for (const c of state.runtime?.draft?.combos || []) {
+    // A suppression marker's positions already carry the compiled combo's own
+    // badge above; painting a second one here would just be confusing.
+    if (c.output?.suppressCompiled) continue;
     if (!runtimeComboActiveOnLayer(c, state.layer)) continue;
     addPositions(stockPositionsToSelectedIndexes(state.runtime.capabilities, c.keyPositions), nextLetter());
   }
@@ -2414,6 +2419,27 @@ function renderCombinations() {
       });
       chip.appendChild(x);
     }
+    if (
+      item.type === "combo" &&
+      state.runtime &&
+      capabilitySupportsComboSuppression(state.runtime.capabilities) &&
+      isUnsafeLiveComboBinding(item.source?.binding)
+    ) {
+      const suppressed = !!findSuppressedComboEntry(item.source);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "combo-suppress";
+      toggle.textContent = suppressed ? "Restore" : "Suppress";
+      toggle.title = suppressed
+        ? `Let ${item.title} fire again on the keyboard`
+        : `Suppress ${item.title} live, without reflashing`;
+      toggle.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (suppressed) restoreSuppressedCombo(item.source);
+        else suppressCombo(item.source);
+      });
+      chip.appendChild(toggle);
+    }
     chip.addEventListener("click", () => openCombinationItem(item));
     wrap.appendChild(chip);
   }
@@ -3292,12 +3318,61 @@ function saveHoldTapSetFromBuilder(draft, classified, used) {
   return id;
 }
 
-function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [] } = {}) {
+async function commitRuntimeDraftLive(draft) {
+  if (!state.studio || !state.runtime) return { ok: false };
+  try {
+    const { commit } = await state.studio.applyRuntimeSnapshot(draft, {
+      expectedActiveGeneration: state.runtime.status?.activeGeneration ?? 0,
+    });
+    const nextSnapshot = createRuntimeDraft({ ...draft, generation: commit.generation });
+    state.runtime = {
+      ...state.runtime,
+      snapshot: nextSnapshot,
+      draft: createRuntimeDraft(nextSnapshot),
+      status: commit.status || state.studio.runtimeStatus,
+    };
+    try {
+      const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
+      if (live?.status) state.runtime.status = live.status;
+      if (
+        live?.snapshot &&
+        (live.status?.activeGeneration || 0) >= commit.generation &&
+        (live.status?.activeGeneration || 0) > 0
+      ) {
+        state.runtime.snapshot = createRuntimeDraft(live.snapshot);
+        state.runtime.draft = createRuntimeDraft(live.snapshot);
+      }
+    } catch {
+      // Keep the commit result if readback fails; USB may still be writing.
+    }
+    state.runtimeDirtyKeys = new Map();
+    const pending = state.runtime.status?.pendingGeneration === commit.generation;
+    setStudioLabel(
+      pending ? "Connected · config saved, waiting for idle" : "Connected · Running Configuration active",
+      "on"
+    );
+    if (pending) startRuntimeIdleWatch(commit.generation);
+    else stopRuntimeIdleWatch();
+    updateStudioButtons();
+    renderKeyboard();
+    renderInspect();
+    renderCombinations();
+    return { ok: true, commit, pending };
+  } catch (error) {
+    if (error instanceof RuntimeValidationError) {
+      presentRuntimeIssues(runtimeIssuesFromDiagnostics(error.diagnostics, state.runtime.capabilities), error.message);
+    }
+    return { ok: false, error };
+  }
+}
+
+async function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [] } = {}) {
   if (!state.runtime) return { ok: false };
   const hasItems = macros.length || combos.length || behaviors.length;
   if (!hasItems) return { ok: false };
+  let result;
   try {
-    const result = importKeymapRuntimeObjects({
+    result = importKeymapRuntimeObjects({
       snapshot: state.runtime.draft,
       capabilities: state.runtime.capabilities,
       layers: state.layers,
@@ -3307,19 +3382,36 @@ function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [
       studioBehaviors: state.studio?.behaviors,
       studioLayers: studioEncodeLayers(),
     });
-    state.runtime.draft = result.draft;
-    renderCombinations();
-    return {
-      ok: result.imported.length > 0,
-      imported: result.imported,
-      skipped: result.skipped,
-    };
   } catch (error) {
     return { ok: false, error };
   }
+  state.runtime.draft = result.draft;
+  renderCombinations();
+  if (!result.imported.length) {
+    return { ok: false, imported: result.imported, skipped: result.skipped };
+  }
+  // Remembered so a later delete can target the exact draft entry instead of
+  // re-deriving it from positions/bindings, which drift as the editor changes.
+  for (const entry of result.imported) {
+    if (entry.kind === "combo") {
+      const match = combos.find((c) => c.id === entry.id);
+      if (match) match.runtimeComboId = entry.runtimeId;
+    } else if (entry.kind === "macro") {
+      const match = macros.find((m) => m.id === entry.id);
+      if (match) match.runtimeObjectId = entry.runtimeId;
+    }
+  }
+  const live = await commitRuntimeDraftLive(state.runtime.draft);
+  return { ok: true, imported: result.imported, skipped: result.skipped, live };
 }
 
-function announceSavedCombination(kind, item, { created } = {}) {
+function liveApplyStatusMessage(label, live) {
+  if (live?.ok) return `${label} saved and applied to the keyboard.`;
+  const reason = live?.error?.message || live?.error;
+  return `${label} is staged, but applying it to the keyboard failed${reason ? `: ${reason}` : ""}.`;
+}
+
+async function announceSavedCombination(kind, item, { created } = {}) {
   // A combo whose output is an existing macro needs that macro pushed
   // alongside it - otherwise the combo's action can't be resolved and the
   // whole import is skipped, even though the pairing is fully representable.
@@ -3327,13 +3419,13 @@ function announceSavedCombination(kind, item, { created } = {}) {
     kind === "combo" && item
       ? state.macros.find((m) => !m.deleted && m.id === comboLinkedMacroId(item, state.macros.filter((x) => !x.deleted).map((x) => x.id)))
       : null;
-  const runtime = pushSavedCombinationToRuntime({
+  const runtime = await pushSavedCombinationToRuntime({
     macros: kind === "macro" && item ? [item] : linkedMacro ? [linkedMacro] : [],
     combos: kind === "combo" && item ? [item] : [],
     behaviors: (kind === "hold-tap" || kind === "behavior") && item ? [item] : [],
   });
   if (runtime.ok) {
-    setStatus(`${item.id || kind} is in the Running Configuration draft. Apply to save it on the keyboard.`);
+    setStatus(liveApplyStatusMessage(item.id || kind, runtime.live));
     return true;
   }
   if (kind === "combo") showFlashNeeded("combo", item?.id, { created });
@@ -3343,7 +3435,7 @@ function announceSavedCombination(kind, item, { created } = {}) {
   return false;
 }
 
-function saveCombinationBuilder() {
+async function saveCombinationBuilder() {
   const draft = state.combinationDraft;
   if (!draft || draft.source?.item?.guarded) {
     closeCombinationBuilder();
@@ -3414,7 +3506,7 @@ function saveCombinationBuilder() {
     closeCombinationBuilder();
     renderPalette();
     const beh = state.behaviors.find((b) => !b.deleted && b.id === saved);
-    announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
+    await announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
     return;
   }
 
@@ -3428,7 +3520,7 @@ function saveCombinationBuilder() {
     closeCombinationBuilder();
     renderPalette();
     const beh = state.behaviors.find((b) => !b.deleted && b.id === id);
-    announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
+    await announceSavedCombination("hold-tap", beh, { created: !!beh?.added });
     return;
   }
 
@@ -3459,7 +3551,7 @@ function saveCombinationBuilder() {
     setDirty(true);
     closeCombinationBuilder();
     const saved = state.combos.find((c) => !c.deleted && c.id === id);
-    announceSavedCombination("combo", saved, { created: !!saved?.added });
+    await announceSavedCombination("combo", saved, { created: !!saved?.added });
     return;
   }
 
@@ -3497,12 +3589,12 @@ function saveCombinationBuilder() {
   const mac = state.macros.find((m) => !m.deleted && m.id === id);
   const comboWrap = state.combos.find((c) => !c.deleted && c.binding === `&${id}`);
   if (state.runtime && (mac || comboWrap)) {
-    const runtime = pushSavedCombinationToRuntime({
+    const runtime = await pushSavedCombinationToRuntime({
       macros: mac ? [mac] : [],
       combos: comboWrap ? [comboWrap] : [],
     });
     if (runtime.ok) {
-      setStatus(`${id} is in the Running Configuration draft. Apply to save it on the keyboard.`);
+      setStatus(liveApplyStatusMessage(id, runtime.live));
       return;
     }
   }
@@ -3643,7 +3735,7 @@ function saveComboDialog() {
   showFlashNeeded("combo", slugComboId(name, positions) || "combo", { created: !!draft.isNew });
 }
 
-function deleteCombo(combo) {
+async function deleteCombo(combo) {
   if (!combo || combo.guarded) return;
   combo.deleted = true;
   setDirty(true);
@@ -3654,15 +3746,122 @@ function deleteCombo(combo) {
     renderCombos();
     renderInspect();
   }
-  // A deleted combo just stops appearing in the next liveComboImports() pass -
-  // Runtime Config can represent that, unless this combo is one of the
-  // stock/compiled behaviors (reset, studio_unlock, ...) that were never a
-  // Runtime Config object in the first place and can't be un-compiled live.
+  // A stock/compiled combo (reset, studio_unlock, ...) was never a Runtime
+  // Config object to begin with, so it can't be un-compiled live.
   if (state.runtime && !isUnsafeLiveComboBinding(combo.binding)) {
-    setStatus(`${comboTitle(combo)} deleted. Apply loaded config to keyboard to push this live.`);
+    if (combo.runtimeComboId != null) {
+      try {
+        state.runtime.draft = deleteRuntimeCombo(state.runtime.draft, combo.runtimeComboId);
+      } catch {
+        // Already gone from the draft - nothing left to push.
+      }
+      const live = await commitRuntimeDraftLive(state.runtime.draft);
+      setStatus(
+        live.ok
+          ? `${comboTitle(combo)} deleted and removed from the keyboard.`
+          : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
+      );
+    } else {
+      setStatus(`${comboTitle(combo)} deleted.`);
+    }
   } else {
     showFlashNeeded("params", comboTitle(combo), { created: false });
   }
+}
+
+// Recovery combos are deliberately position-only with no dependency on
+// runtime state, so they still work if the keyboard wedges. Suppressing one
+// removes that safety net until it's restored or the board is reflashed -
+// worth a stronger warning than an ordinary stock combo like the log dump.
+function isRecoveryComboBinding(text) {
+  return /sys_reset|bootloader|&rst\b|&reset\b/i.test(String(text || ""));
+}
+
+function suppressedComboEntry(stockPositions) {
+  const key = stockPositions.slice().sort((a, b) => a - b).join(",");
+  return (
+    (state.runtime?.draft?.combos || []).find((c) => {
+      if (!c.output?.suppressCompiled) return false;
+      return (c.keyPositions || []).slice().sort((a, b) => a - b).join(",") === key;
+    }) || null
+  );
+}
+
+function findSuppressedComboEntry(combo) {
+  if (!state.runtime?.capabilities || !Array.isArray(combo?.positions)) return null;
+  try {
+    return suppressedComboEntry(selectedIndexesToStock(state.runtime.capabilities, combo.positions));
+  } catch {
+    return null;
+  }
+}
+
+async function suppressCombo(combo) {
+  if (!combo || !state.runtime) return;
+  const capabilities = state.runtime.capabilities;
+  if (!capabilitySupportsComboSuppression(capabilities)) {
+    setStatus("This firmware does not support live combo suppression.");
+    return;
+  }
+  const recovery = isRecoveryComboBinding(combo.binding);
+  const groundTruthNote =
+    "This only affects whatever combo actually occupies these positions in your currently loaded file - if that doesn't match what's flashed, nothing will happen.";
+  const warning = recovery
+    ? `${comboTitle(combo)} is a last-resort recovery combo with no dependency on runtime state, so it still works if the keyboard wedges. Suppressing it live removes that safety net until you restore it or reflash. ${groundTruthNote} Suppress anyway?`
+    : `Suppress ${comboTitle(combo)} live? ${groundTruthNote} You can restore it later.`;
+  if (!window.confirm(warning)) {
+    setStatus("Suppress cancelled.");
+    return;
+  }
+  let draft;
+  try {
+    draft = upsertRuntimeCombo(
+      state.runtime.draft,
+      {
+        id: nextRuntimeComboId(state.runtime.draft),
+        selectedPositions: combo.positions,
+        timeoutMs: 50,
+        output: { suppressCompiled: true },
+      },
+      capabilities,
+      runtimeEncodeOpts()
+    );
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+  state.runtime.draft = draft;
+  renderCombinations();
+  const live = await commitRuntimeDraftLive(state.runtime.draft);
+  setStatus(
+    live.ok
+      ? `${comboTitle(combo)} suppressed on the keyboard.`
+      : `${comboTitle(combo)} staged as suppressed, but pushing it to the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
+  );
+}
+
+async function restoreSuppressedCombo(combo) {
+  if (!combo || !state.runtime) return;
+  const entry = findSuppressedComboEntry(combo);
+  if (!entry) {
+    setStatus(`${comboTitle(combo)} is not currently suppressed.`);
+    return;
+  }
+  let draft;
+  try {
+    draft = deleteRuntimeCombo(state.runtime.draft, entry.id);
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+  state.runtime.draft = draft;
+  renderCombinations();
+  const live = await commitRuntimeDraftLive(state.runtime.draft);
+  setStatus(
+    live.ok
+      ? `${comboTitle(combo)} restored on the keyboard.`
+      : `${comboTitle(combo)} un-suppressed locally, but pushing it to the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
+  );
 }
 
 function toggleComboKey(index) {
@@ -4068,7 +4267,7 @@ function saveMacroEditor() {
   showFlashNeeded("macro", id, { created: !!draft.isNew });
 }
 
-function deleteMacro(macro) {
+async function deleteMacro(macro) {
   if (!macro) return;
   const used = state.layers.some((layer) =>
     layer.bindings.some((b) => b.text.trim() === `&${macro.id}`)
@@ -4083,7 +4282,30 @@ function deleteMacro(macro) {
   // be removed live by omitting it from the next snapshot - a stock macro
   // compiled into the original keymap source can't be un-compiled either way.
   if (state.runtime && macro.added) {
-    setStatus(`&${macro.id} deleted. Apply loaded config to keyboard to push this live.`);
+    if (macro.runtimeObjectId != null) {
+      const refs = runtimeObjectReferences(state.runtime.draft, macro.runtimeObjectId, state.runtime.capabilities);
+      if (refs.combos.length) {
+        setStatus(
+          `&${macro.id} deleted locally, but combo ${refs.combos.map((c) => c.id).join(", ")} still uses it on the keyboard. Delete that combo first, then remove &${macro.id}.`
+        );
+        return;
+      }
+      try {
+        state.runtime.draft = deleteRuntimeObject(state.runtime.draft, macro.runtimeObjectId, {
+          capabilities: state.runtime.capabilities,
+        });
+      } catch {
+        // Already gone from the draft - nothing left to push.
+      }
+      const live = await commitRuntimeDraftLive(state.runtime.draft);
+      setStatus(
+        live.ok
+          ? `&${macro.id} deleted and removed from the keyboard.`
+          : `&${macro.id} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
+      );
+    } else {
+      setStatus(`&${macro.id} deleted.`);
+    }
   } else {
     showFlashNeeded("params", `&${macro.id}`, { created: false });
   }
@@ -5200,7 +5422,9 @@ function runtimeCombinationEntries() {
       id: combo.id,
       positions: selected,
       title: selected.map((index) => comboKeyCaption(index)).join(" + ") || `Combo ${combo.id}`,
-      detail: prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
+      detail: combo.output?.suppressCompiled
+        ? "suppressed"
+        : prettyBindingLabel(bindingTextFromAction(combo.output, runtimeEncodeOpts())) || `combo ${combo.id}`,
       tint: "kind-combo",
       source: combo,
     });

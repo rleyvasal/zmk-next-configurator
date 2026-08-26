@@ -1,7 +1,7 @@
 // GENERATED FILE -- do not edit by hand.
 // Produced by zmk-next-messages/tools/gen_js_fields.py from proto/zmk/*.proto.
 // Regenerate with zmk-next-configurator/scripts/sync-messages.sh.
-// Source: zmk-next-messages @ af21e12b75d15e15652a636094c7f7b00a5ca7c2
+// Source: zmk-next-messages @ 763e8572616b17678f6f3a46c169a2a9baad8083
 
 export const FIELDS = Object.freeze({
   "meta": Object.freeze({
@@ -308,6 +308,7 @@ export const FIELDS = Object.freeze({
     "ActionReference": Object.freeze({
       "compiled_behavior": 1,
       "runtime_object_id": 2,
+      "suppress_compiled": 3,
     }),
     "CompiledBehaviorAction": Object.freeze({
       "behavior_id": 1,
@@ -517,6 +518,7 @@ export const ENUMS = Object.freeze({
       "RUNTIME_FEATURE_COMBO_REQUIRE_PRIOR_IDLE": 11,
       "RUNTIME_FEATURE_HOLD_TAP_QUICK_TAP": 12,
       "RUNTIME_FEATURE_HOLD_TAP_REQUIRE_PRIOR_IDLE": 13,
+      "RUNTIME_FEATURE_COMBO_SUPPRESS_COMPILED": 14,
     }),
     "HoldTapFlavor": Object.freeze({
       "HOLD_TAP_FLAVOR_UNSPECIFIED": 0,

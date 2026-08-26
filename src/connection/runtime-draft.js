@@ -6,6 +6,7 @@ import {
   decodeRuntimeSnapshot,
   encodeRuntimeSnapshot,
   runtimeObjectAction,
+  suppressCompiledAction,
 } from "./runtime-config.js";
 
 export class RuntimeDraftError extends Error {
@@ -45,6 +46,7 @@ const FEATURE = {
   MACROS: 5,
   HOLD_TAPS: 6,
   TAP_DANCES: 7,
+  COMBO_SUPPRESS_COMPILED: 14,
 };
 
 const OBJECT_TYPE_FEATURE = {
@@ -93,6 +95,10 @@ export function capabilitySupportsObjectType(capabilities, type) {
 
 export function capabilitySupportsCombos(capabilities) {
   return capabilityHas(capabilities, FEATURE.COMBOS);
+}
+
+export function capabilitySupportsComboSuppression(capabilities) {
+  return capabilitySupportsCombos(capabilities) && capabilityHas(capabilities, FEATURE.COMBO_SUPPRESS_COMPILED);
 }
 
 export function supportedRuntimeEditorTypes(capabilities) {
@@ -322,6 +328,7 @@ export function runtimeObjectReferences(snapshot, objectId, capabilities) {
 
 export function bindingTextFromAction(action, { behaviors, studioLayers } = {}) {
   if (!action) return "";
+  if (action.suppressCompiled) return "suppress compiled combo";
   if (action.runtimeObjectId) return runtimeBindingText(action.runtimeObjectId);
   if (action.compiledBehavior) {
     const decoded = cellsToBinding(
@@ -439,6 +446,12 @@ function stockPositions(capabilities, keyCount) {
 }
 
 function requireAction(action, binding, options, name) {
+  if (action?.suppressCompiled) {
+    if (!options.allowSuppressCompiled) {
+      throw new RuntimeDraftError("Suppress-compiled actions are only valid as combo output");
+    }
+    return suppressCompiledAction();
+  }
   if (action?.compiledBehavior) {
     const compiled = action.compiledBehavior;
     if (!compiled.behaviorId) throw new RuntimeDraftError(`${name} is required`);
@@ -593,6 +606,7 @@ function normalizeRuntimeCombo(combo, { behaviors, studioLayers, snapshot, capab
     behaviors,
     studioLayers,
     allowRuntimeObject: true,
+    allowSuppressCompiled: true,
     snapshot,
   }, "combo output");
   return {
