@@ -237,7 +237,7 @@
               <span id="runtime-pill" class="combo-keys-pill"></span>
               <button type="button" id="runtime-x" class="settings-close" aria-label="Close">×</button>
             </div>
-            <p id="runtime-help" class="field-hint">Edits stay in the editor until Apply. Firmware validates the complete snapshot before it can replace the active generation.</p>
+            <p id="runtime-help" class="field-hint">Supported key and combination edits save live. Apply writes a complete loaded configuration after firmware validates the replacement generation.</p>
             <div id="runtime-combo-fields" hidden>
               <div class="builder-block step-active" id="runtime-trigger-block">
                 <div class="assign-head">
@@ -673,7 +673,7 @@
     <script type="module">
       import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=80").catch((err) => {
+      import("../../src/ui/app.js?v=82").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

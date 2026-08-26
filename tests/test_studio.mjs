@@ -1,5 +1,5 @@
 import { encodeUint32, encodeSint32, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
-import { frameBytes, deframeAll, parseResponse } from "../src/connection/studio.js";
+import { frameBytes, deframeAll, parseResponse, StudioClient } from "../src/connection/studio.js";
 import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile, layerNameKey, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
 
 if (hidUsage("A") !== 0x070004) throw new Error(`A ${hidUsage("A").toString(16)}`);
@@ -255,6 +255,25 @@ const rejectedSetResponse = parseResponse(
 if (rejectedSetResponse.setLayerBinding !== 3) {
   throw new Error(`set-layer rejection ${JSON.stringify(rejectedSetResponse)}`);
 }
+
+const resetSettingsResponse = parseResponse(
+  encodeSub(1, concatBytes([encodeUint32(1, 3), encodeSub(3, encodeUint32(4, 1))]))
+);
+if (!resetSettingsResponse.resetSettings) {
+  throw new Error(`keymap reset response ${JSON.stringify(resetSettingsResponse)}`);
+}
+const resetClient = Object.create(StudioClient.prototype);
+resetClient.call = async () => ({ resetSettings: true });
+if (!(await resetClient.resetKeymapSettings())) throw new Error("keymap reset client");
+resetClient.call = async () => ({ resetSettings: false });
+await resetClient.resetKeymapSettings().then(
+  () => {
+    throw new Error("failed keymap reset must reject");
+  },
+  (error) => {
+    if (!/compiled Studio keymap/.test(error.message)) throw error;
+  }
+);
 
 // The wire value can collide with another local behavior ID. The decoded
 // logical ID must still win; otherwise a mouse binding can read back as hmr.

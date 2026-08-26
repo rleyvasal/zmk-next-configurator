@@ -88,6 +88,7 @@ import {
   nextRuntimeComboId,
   nextRuntimeObjectId,
   parseRuntimeObjectId,
+  patchDraftKeymapOverrides,
   replaceDraftKeymapOverrides,
   actionFromBindingText,
   bindingsMatchForOverlay,
@@ -219,6 +220,8 @@ const liveQueue = [];
 let liveBusy = false;
 let runtimeIdleWatch = 0;
 let runtimeWriteQueue = Promise.resolve();
+let runtimeKeyWriteQueued = false;
+let runtimeKeyWriteFollowup = false;
 
 function enqueueRuntimeWrite(task) {
   const next = runtimeWriteQueue.then(task, task);
@@ -2235,12 +2238,7 @@ function noteRuntimeDirtyKey(layerIndex, index, text) {
   if (!state.runtime) return;
   const mapped = studioLayerIndex(layerIndex);
   const studioLayer = mapped == null ? null : state.studio?.layers?.[mapped];
-  const stock = studioLayer ? state.stockBindingTexts.get(studioLayer.id)?.[index] : null;
   const id = runtimeDirtyKeyId(layerIndex, index);
-  if (stock != null && bindingsMatchForOverlay(text, stock)) {
-    state.runtimeDirtyKeys.delete(id);
-    return;
-  }
   state.runtimeDirtyKeys.set(id, {
     layerIndex,
     index,
@@ -2257,8 +2255,8 @@ function applyBindingField(layerIndex, changes, field, opts = {}) {
       bindings[c.index].text = c[field];
       bindings[c.index].compiledHole = false;
     }
-    queueLive(layerIndex, c.index, c[field]);
     noteRuntimeDirtyKey(layerIndex, c.index, c[field]);
+    queueLive(layerIndex, c.index, c[field]);
   }
   state.layer = layerIndex;
   setDirty(true);
@@ -3333,12 +3331,22 @@ function saveHoldTapSetFromBuilder(draft, classified, used) {
   return id;
 }
 
-async function commitRuntimeDraftLive(draft, { progress } = {}) {
+async function commitRuntimeDraftLive(draft, { progress, clearDirtyKeys = false } = {}) {
   if (!state.studio || !state.runtime) return { ok: false };
-  return enqueueRuntimeWrite(() => persistRuntimeDraft(draft, { progress }));
+  return enqueueRuntimeWrite(() => {
+    let queuedDraft = draft;
+    if (!clearDirtyKeys) {
+      queuedDraft = createRuntimeDraft(draft);
+      queuedDraft.keymapOverrides = createRuntimeDraft(state.runtime.snapshot).keymapOverrides;
+      if (state.runtimeDirtyKeys.size) {
+        queuedDraft = overlayFromDirtyKeys(queuedDraft, state.runtimeDirtyKeys.values());
+      }
+    }
+    return persistRuntimeDraft(queuedDraft, { progress, clearDirtyKeys });
+  });
 }
 
-async function persistRuntimeDraft(draft, { progress } = {}) {
+async function persistRuntimeDraft(draft, { progress, clearDirtyKeys = false, refreshEditor = true } = {}) {
   const report = progress || setStatus;
   try {
     const { validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
@@ -3390,7 +3398,7 @@ async function persistRuntimeDraft(draft, { progress } = {}) {
     } catch {
       // Keep the commit result if readback fails; USB may still be writing.
     }
-    state.runtimeDirtyKeys = new Map();
+    if (clearDirtyKeys) state.runtimeDirtyKeys = new Map();
     stopRuntimeIdleWatch();
     setStudioLabel(
       isStockRuntimeSnapshot(state.runtime.snapshot)
@@ -3399,7 +3407,12 @@ async function persistRuntimeDraft(draft, { progress } = {}) {
       "on"
     );
     updateStudioButtons();
-    await applyActiveRuntimeToEditor();
+    if (refreshEditor) await applyActiveRuntimeToEditor();
+    else {
+      renderKeyboard();
+      renderInspect();
+      renderCombinations();
+    }
     return { ok: true, pending: false, commit, validation };
   } catch (error) {
     if (error instanceof RuntimeValidationError) {
@@ -5129,10 +5142,13 @@ function updateFlashBanner() {
 
 function queueLive(layer, index, text) {
   if (!state.studio) return;
-  // A Runtime Config device commits complete immutable generations. Keep
-  // edits local until Apply instead of mixing legacy per-key writes into its
-  // runtime overlay.
-  if (state.runtime) return;
+  // Runtime Config commits complete immutable generations. Queue the edited
+  // keys into one serialized generation so ordinary remaps stay live without
+  // mixing the legacy per-key RPC into the runtime overlay.
+  if (state.runtime) {
+    queueRuntimeKeyWrite();
+    return;
+  }
   if (studioLayerIndex(layer) == null) {
     const name = displayLayerName(state.layers[layer]?.id);
     setStatus(`${name} is not on this keyboard. Apply cannot write it — download the keymap and flash firmware.`);
@@ -5394,30 +5410,70 @@ function liveComboImports() {
   };
 }
 
-function overlayFromDirtyKeys(snapshot) {
-  const draft = createRuntimeDraft(snapshot);
-  const caps = state.runtime?.capabilities;
-  const positions = caps?.selectedToStockPositions || [];
-  const byKey = new Map(
-    (draft.keymapOverrides || []).map((override) => [`${override.layerId}:${override.keyPosition}`, override])
-  );
-  for (const dirty of state.runtimeDirtyKeys.values()) {
-    if (dirty.layerId == null || dirty.index == null) continue;
-    const keyPosition = Number(positions[dirty.index]);
-    if (!Number.isInteger(keyPosition) || keyPosition < 0) continue;
-    byKey.set(`${dirty.layerId}:${keyPosition}`, {
+function overlayFromDirtyKeys(snapshot, dirtyKeys) {
+  return patchDraftKeymapOverrides({
+    snapshot,
+    capabilities: state.runtime?.capabilities,
+    changes: [...dirtyKeys].map((dirty) => ({
       layerId: dirty.layerId,
-      keyPosition,
-      action: actionFromBindingText(dirty.text, {
-        behaviors: state.studio.behaviors,
-        studioLayers: studioEncodeLayers(),
-        allowRuntimeObject: true,
-        snapshot: draft,
-      }),
-    });
+      selectedIndex: dirty.index,
+      text: dirty.text,
+      compiledText: state.stockBindingTexts.get(dirty.layerId)?.[dirty.index],
+    })),
+    behaviors: state.studio.behaviors,
+    studioLayers: studioEncodeLayers(),
+  });
+}
+
+function queueRuntimeKeyWrite() {
+  if (!state.studio || !state.runtime) return;
+  if (runtimeKeyWriteQueued) {
+    runtimeKeyWriteFollowup = true;
+    return;
   }
-  draft.keymapOverrides = [...byKey.values()];
-  return draft;
+  runtimeKeyWriteQueued = true;
+  enqueueRuntimeWrite(async () => {
+    const captured = new Map(state.runtimeDirtyKeys);
+    if (!captured.size || !state.studio || !state.runtime) return;
+    let draft;
+    try {
+      draft = overlayFromDirtyKeys(state.runtime.snapshot, captured.values());
+    } catch (error) {
+      const dirty = captured.values().next().value;
+      if (dirty?.text && isFlashRequiredReason(error.message)) {
+        showFlashNeededForBinding(dirty.text, error.message);
+      }
+      setStatus(`Key edit could not be applied live: ${error.message || error}`);
+      return;
+    }
+    const label =
+      captured.size === 1
+        ? `P${captured.values().next().value.index}`
+        : `${captured.size} keys`;
+    const live = await persistRuntimeDraft(draft, {
+      progress: setStatus,
+      clearDirtyKeys: false,
+      refreshEditor: false,
+    });
+    if (!live.ok && !live.pending) {
+      setStatus(`Key edit was not applied live${live.error ? `: ${live.error.message || live.error}` : "."}`);
+      return;
+    }
+    for (const [id, value] of captured) {
+      if (state.runtimeDirtyKeys.get(id) === value) state.runtimeDirtyKeys.delete(id);
+    }
+    setStatus(
+      live.pending
+        ? `${label} saved. Lift all keys so the keyboard can activate it.`
+        : `${label} is now active on the keyboard.`
+    );
+  }).finally(() => {
+    runtimeKeyWriteQueued = false;
+    if (runtimeKeyWriteFollowup) {
+      runtimeKeyWriteFollowup = false;
+      queueRuntimeKeyWrite();
+    }
+  });
 }
 
 async function applyRuntimeAll() {
@@ -5576,7 +5632,7 @@ async function applyRuntimeAll() {
 
   state.runtimeIssues = [];
   setStatus(`Saving Running Configuration (${draft.keymapOverrides.length} key overlay(s))…`);
-  const live = await commitRuntimeDraftLive(draft, { progress: setStatus });
+  const live = await commitRuntimeDraftLive(draft, { progress: setStatus, clearDirtyKeys: true });
   if (!live.ok) {
     if (!live.error) return;
     if (live.pending) setStatus(live.error.message);
@@ -5615,7 +5671,7 @@ async function restoreRuntimeStock() {
   if (!state.studio || !state.runtime) return;
   if (
     !window.confirm(
-      "Restore the compiled stock configuration? This saves an empty Running Configuration generation. The previous valid generation remains available for on-device recovery."
+      "Restore the compiled stock configuration? This clears saved Studio keymap edits and saves an empty Running Configuration generation. The previous valid Running Configuration generation remains available for on-device recovery."
     )
   ) {
     setStatus("Restore stock cancelled.");
@@ -5671,6 +5727,16 @@ async function restoreRuntimeStockNow() {
     }
   }
   stopRuntimeIdleWatch();
+  setStatus("Running Configuration cleared. Restoring the compiled Studio keymap…");
+  try {
+    await state.studio.resetKeymapSettings();
+  } catch (error) {
+    setStudioLabel("Connected · Running Configuration cleared; keymap restore failed", "err");
+    setStatus(
+      `Running Configuration generation ${reset.generation} is stock, but restoring the compiled Studio keymap failed: ${error.message}`
+    );
+    return;
+  }
   setStudioLabel("Connected · stock configuration active", "on");
   const restored = await applyActiveRuntimeToEditor();
   setStatus(
@@ -5757,7 +5823,7 @@ function runtimeOverlaySummary() {
     parts.push(`${counts.keyOverrides} key${counts.keyOverrides === 1 ? "" : "s"} overwritten`);
   }
   if (counts.comboKeys) {
-    parts.push(`${counts.comboKeys} combo key${counts.comboKeys === 1 ? "" : "s"} overlaid`);
+    parts.push(`${counts.comboKeys} key${counts.comboKeys === 1 ? "" : "s"} overwritten`);
   }
   if (counts.liveCombos) {
     parts.push(`${counts.liveCombos} combo${counts.liveCombos === 1 ? "" : "s"}`);

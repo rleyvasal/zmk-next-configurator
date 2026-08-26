@@ -490,6 +490,14 @@ export class StudioClient {
     return true;
   }
 
+  async resetKeymapSettings() {
+    const resp = await this.call((id) => encodeCore(id, Fc.Request.reset_settings), 10000);
+    if (!resp.resetSettings) {
+      throw new Error("Keyboard did not restore the compiled Studio keymap");
+    }
+    return true;
+  }
+
   async getRuntimeCapabilities({ timeoutMs = 10000 } = {}) {
     const resp = await this.call((id) => encodeRuntime(id, Fr.Request.get_runtime_capabilities), timeoutMs);
     const capabilities = resp.runtimeConfig?.capabilities;

@@ -647,6 +647,72 @@ export function bindingsMatchForOverlay(editorText, compiledText) {
 }
 
 /**
+ * Apply a small set of live key edits to an existing Runtime Config snapshot.
+ * Returning a key to its compiled binding removes the overlay instead of
+ * consuming an override slot with a redundant action.
+ */
+export function patchDraftKeymapOverrides({
+  snapshot,
+  capabilities,
+  changes,
+  behaviors,
+  studioLayers,
+}) {
+  const draft = createRuntimeDraft(snapshot);
+  const keyCount = Number(capabilities?.selectedPositionCount);
+  if (!Number.isInteger(keyCount) || keyCount <= 0) {
+    throw new RuntimeDraftError("Runtime Config did not report a valid selected key count");
+  }
+  const selectedToStock = stockPositions(capabilities, keyCount);
+  const byKey = new Map(
+    (draft.keymapOverrides || []).map((override) => [
+      `${override.layerId}:${override.keyPosition}`,
+      override,
+    ])
+  );
+
+  for (const change of changes || []) {
+    const layerId = Number(change?.layerId);
+    const selectedIndex = Number(change?.selectedIndex);
+    if (!Number.isInteger(layerId) || layerId < 0 || layerId > 0xff) {
+      throw new RuntimeDraftError("Live key edit targets a layer that is not present in this firmware");
+    }
+    if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= keyCount) {
+      throw new RuntimeDraftError(`Live key edit targets invalid position ${selectedIndex}`);
+    }
+    const keyPosition = selectedToStock[selectedIndex];
+    const id = `${layerId}:${keyPosition}`;
+    if (
+      change.compiledText != null &&
+      bindingsMatchForOverlay(change.text, change.compiledText)
+    ) {
+      byKey.delete(id);
+      continue;
+    }
+    byKey.set(id, {
+      layerId,
+      keyPosition,
+      action: actionFromBindingText(change.text, {
+        behaviors,
+        studioLayers,
+        allowRuntimeObject: true,
+        snapshot: draft,
+      }),
+    });
+  }
+
+  const overrides = [...byKey.values()];
+  const limit = Number(capabilities?.limits?.maxKeymapOverrides);
+  if (Number.isFinite(limit) && overrides.length > limit) {
+    throw new RuntimeDraftError(
+      `Runtime Config needs ${overrides.length} keymap overrides, but this firmware reserves ${limit}`
+    );
+  }
+  draft.keymapOverrides = overrides;
+  return draft;
+}
+
+/**
  * Replace only a draft's ordinary keymap overlay from the editor. Runtime
  * objects and combos already in the draft remain intact until their dedicated
  * editors update them. editorLayers use the selected physical-layout order;
