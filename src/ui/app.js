@@ -4374,6 +4374,21 @@ function deleteBehavior(behavior) {
   if (used && !window.confirm(`&${behavior.id} is used on the keymap. Delete it anyway?`)) return;
   behavior.deleted = true;
   setDirty(true);
+  // Marking the behavior deleted doesn't touch the keys that reference it -
+  // without this, &id (or &id HOLD TAP) stays literally bound, so the
+  // hold-tap tint and the orphaned reference both survive (and come right
+  // back on reload, since nothing about the keymap actually changed).
+  for (const layer of state.layers) {
+    for (const binding of layer.bindings) {
+      const text = binding.text.trim();
+      if (text === `&${behavior.id}`) {
+        binding.text = "&trans";
+        continue;
+      }
+      const parsed = parseHoldTapBinding(text, behavior.id);
+      if (parsed) binding.text = `&kp ${parsed.tap}`;
+    }
+  }
   if (state.combinationDraft?.source?.item === behavior) closeCombinationBuilder();
   else closeBehaviorEditor();
   renderPalette();
