@@ -5311,7 +5311,11 @@ async function restoreRuntimeStock() {
   );
   if (pending) startRuntimeIdleWatch(reset.generation);
   else stopRuntimeIdleWatch();
+  state.flashNotice = null;
+  updateFlashBanner();
   updateStudioButtons();
+  renderKeyboard();
+  renderInspect();
   renderCombinations();
   setStatus(
     `Saved stock Running Configuration generation ${reset.generation}` +
