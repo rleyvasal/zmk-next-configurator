@@ -57,6 +57,8 @@ if (parsed.layers[0].start == null || !keymap.slice(parsed.layers[0].start, pars
 
 const base = parsed.layers[0].bindings.map((b) => b.text);
 if (base[0] !== "&kp Q") throw new Error(`P0 ${base[0]}`);
+if (base[2] !== "&kp F") throw new Error(`P2 ${base[2]}`);
+if (base[3] !== "&kp P") throw new Error(`P3 ${base[3]}`);
 if (base[10] !== "&hml LGUI A") throw new Error(`P10 ${base[10]}`);
 if (base[35] !== "&lt ADJ ENTER") throw new Error(`P35 ${base[35]}`);
 if (base[18] !== "&hmr RALT I") throw new Error(`P18 ${base[18]}`);

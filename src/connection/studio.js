@@ -31,6 +31,7 @@ import {
   encodeRuntimeSnapshot,
   runtimeConfigErrorMessage,
 } from "./runtime-config.js";
+import { waitForRuntimeStatus } from "./runtime-activation.js";
 
 const Fs = FIELDS.studio;
 const Fc = FIELDS.core;
@@ -692,16 +693,26 @@ export class StudioClient {
         await this.abortRuntimeUpdate(updateId);
       }
       if (!retried && error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
-        await this.abortAnyRuntimeUpdate();
-        return this.applyRuntimeSnapshot(snapshot, {
-          expectedActiveGeneration,
-          retried: true,
-          onProgress,
+        // Firmware returns busy while a persisted generation is waiting for
+        // idle. Aborting staging does not clear that. Wait, then retry with
+        // the generation that is actually active.
+        progress("Waiting for the keyboard to go idle. Lift all keys…");
+        const waited = await waitForRuntimeStatus(() => this.getRuntimeConfigStatus({ timeoutMs: 2000 }), {
+          wantedGeneration: 0,
+          timeoutMs: 60000,
+          onWaiting: () => progress("Waiting for the keyboard to go idle. Lift all keys…"),
         });
+        if (waited.ok) {
+          return this.applyRuntimeSnapshot(snapshot, {
+            expectedActiveGeneration: waited.status?.activeGeneration ?? 0,
+            retried: true,
+            onProgress,
+          });
+        }
       }
       if (error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
         throw new Error(
-          "A Runtime Config Apply is already in progress. Release all keys if a save is waiting for idle. Otherwise Disconnect, unplug USB to clear the stuck staging, plug back in, then Apply once and wait for “Saved generation”."
+          "A Runtime Config save is waiting for the keyboard to go idle. Lift all keys, then try again."
         );
       }
       if (timedOut) {

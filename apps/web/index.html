@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Next Configurator</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=73" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=80" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -673,7 +673,7 @@
     <script type="module">
       import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=73").catch((err) => {
+      import("../../src/ui/app.js?v=80").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

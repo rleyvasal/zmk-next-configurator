@@ -484,7 +484,7 @@ function paramKinds(descs) {
   return kinds;
 }
 
-function layerNameKey(raw) {
+export function layerNameKey(raw) {
   return String(raw || "")
     .replace(/_layer$/i, "")
     .replace(/\s+/g, "")
@@ -624,6 +624,55 @@ export function isPlaceholderBinding(text) {
   if (key == null || key === "0" || key === "N0" || key === "KP_0") return true;
   if (/^\d+$/.test(key)) return true;
   return false;
+}
+
+export function isVacantBinding(text) {
+  const t = String(text || "").trim();
+  return !t || t === "&none" || isPlaceholderBinding(t);
+}
+
+/** Studio get_keymap can return an empty cell while the compiled .keymap still
+ *  has a real binding (decode miss, or overlay-none read before stock activate). */
+export function preferFileBindingIfVacant(decodedText, fileText) {
+  if (!isVacantBinding(decodedText)) return decodedText;
+  if (!isVacantBinding(fileText)) return fileText;
+  return decodedText || "&none";
+}
+
+function bindingTextAt(layer, index) {
+  const binding = layer?.bindings?.[index];
+  if (binding == null) return "";
+  return String(binding.text ?? binding ?? "").trim();
+}
+
+/** Match a compiled-file layer by name (BASE vs base_layer) then by index. */
+export function fileBindingAt(fileLayers, layerId, index, fallbackIndex = -1) {
+  if (!fileLayers?.length || index == null || index < 0) return "";
+  const want = layerNameKey(layerId);
+  const named = want ? fileLayers.find((layer) => layerNameKey(layer.id || layer.name) === want) : null;
+  const fromName = bindingTextAt(named, index);
+  if (!isVacantBinding(fromName)) return fromName;
+  if (fallbackIndex >= 0) {
+    const fromIndex = bindingTextAt(fileLayers[fallbackIndex], index);
+    if (!isVacantBinding(fromIndex)) return fromIndex;
+  }
+  return fromName || "";
+}
+
+export function fillVacantBindingsFromFile(editorLayers, fileLayers, skip) {
+  let filled = 0;
+  (editorLayers || []).forEach((layer, li) => {
+    (layer.bindings || []).forEach((binding, i) => {
+      if (skip?.(layer, li, binding, i)) return;
+      const fileText = fileBindingAt(fileLayers, layer.id || layer.name, i, li);
+      const next = preferFileBindingIfVacant(binding.text, fileText);
+      if (next !== binding.text) {
+        binding.text = next;
+        filled++;
+      }
+    });
+  });
+  return filled;
 }
 
 function dtsNameFromBehavior(behavior) {

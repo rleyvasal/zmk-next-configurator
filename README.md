@@ -48,10 +48,8 @@ previous valid generation as on-device recovery fallback.
 When Runtime Config is available, **Runtime objects** edits macros, combos, hold-taps,
 mod-morphs, and tap-dances in a local draft. Unsupported types stay hidden. Assign an
 object to many keys with `&rt <id>`. **Import from keymap** copies compatible `.keymap`
-macros, all-layer combos, mod-morphs, tap-dances, and simple hold-taps into that draft
-and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers and
-layer-filtered combos stay firmware-compiled so their timing and layer rules cannot
-silently change.
+macros, combos (including layer masks), mod-morphs, tap-dances, and simple hold-taps into that draft
+and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers stay firmware-compiled so their timing cannot silently change. A combo or Apply is live only after the firmware activates that generation (lift keys if the UI says waiting for idle).
 
 The draft shows firmware resource use before Apply. Firmware validation errors are
 mapped onto the object or key that caused them. **Export snapshot** downloads a portable
@@ -98,6 +96,7 @@ node tests/test_runtime_config.mjs
 node tests/test_runtime_import.mjs
 node tests/test_runtime_document.mjs
 node tests/test_runtime_display.mjs
+node tests/test_runtime_activation.mjs
 ```
 
 `src/connection/fields.generated.js` holds the protobuf field/enum numbers used

@@ -1,6 +1,6 @@
 import { encodeUint32, encodeSint32, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
 import { frameBytes, deframeAll, parseResponse } from "../src/connection/studio.js";
-import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
+import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile, layerNameKey, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
 
 if (hidUsage("A") !== 0x070004) throw new Error(`A ${hidUsage("A").toString(16)}`);
 if (hidUsage("Q") !== 0x070014) throw new Error(`Q ${hidUsage("Q").toString(16)}`);
@@ -173,6 +173,33 @@ if (isEmptyStudioCell({ behaviorId: 7, param1: 0x070014, param2: 0 }) !== false)
 if (isPlaceholderBinding("&kp 0") !== true) throw new Error("kp 0 placeholder");
 if (isPlaceholderBinding("&kp N0") !== true) throw new Error("kp N0 placeholder");
 if (isPlaceholderBinding("&kp Q") !== false) throw new Error("kp Q not placeholder");
+if (!isVacantBinding("&none") || !isVacantBinding("&kp 0") || isVacantBinding("&kp F")) {
+  throw new Error("vacant binding");
+}
+if (preferFileBindingIfVacant("&none", "&kp F") !== "&kp F") throw new Error("file fills empty studio cell");
+if (preferFileBindingIfVacant("&kp HASH", "&kp F") !== "&kp HASH") throw new Error("decoded cell wins");
+if (hidToken(0x070009) !== "F" || hidToken(9) !== "F") throw new Error("hidToken F");
+if (layerNameKey("BASE") !== "BASE" || layerNameKey("base_layer") !== "BASE") throw new Error("layer name key");
+const fileLayers = [
+  { id: "base_layer", bindings: [{ text: "&kp Q" }, { text: "&kp W" }, { text: "&kp F" }, { text: "&kp P" }] },
+  { id: "code_layer", bindings: [{ text: "&kp GRAVE" }, { text: "&kp AT" }, { text: "&kp HASH" }] },
+];
+if (fileBindingAt(fileLayers, "BASE", 2) !== "&kp F") throw new Error("fileBindingAt BASE/P2");
+if (fileBindingAt(fileLayers, "code_layer", 2) !== "&kp HASH") throw new Error("fileBindingAt code/P2");
+const editorHoles = [
+  {
+    id: "base_layer",
+    bindings: [{ text: "&kp Q" }, { text: "&kp W" }, { text: "&none" }, { text: "&kp P" }],
+  },
+];
+if (fillVacantBindingsFromFile(editorHoles, [{ id: "BASE", bindings: fileLayers[0].bindings }]) !== 1) {
+  throw new Error("fill should replace one hole");
+}
+if (editorHoles[0].bindings[2].text !== "&kp F") throw new Error("name-matched fill writes F");
+const skipped = [{ id: "base_layer", bindings: [{ text: "&none" }, { text: "&none" }, { text: "&none" }] }];
+fillVacantBindingsFromFile(skipped, fileLayers, (_layer, _li, _binding, i) => i === 2);
+if (skipped[0].bindings[2].text !== "&none") throw new Error("skip keeps overlay hole");
+if (skipped[0].bindings[0].text !== "&kp Q") throw new Error("unskipped hole fills");
 const emptyKp = cellsToBinding({ behaviorId: 7, param1: 0, param2: 0 }, behaviors, layers);
 if (emptyKp.ok) throw new Error("zero keypress should not replace a file key");
 const hidNoMeta = [

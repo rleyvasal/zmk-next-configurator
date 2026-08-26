@@ -74,7 +74,7 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
-import { bindingToCells, cellsToBinding, isPlaceholderBinding } from "../connection/studio-bind.js";
+import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
   RuntimeDraftError,
@@ -108,7 +108,15 @@ import {
   upsertRuntimeObject,
 } from "../connection/runtime-draft.js";
 import { comboLinkedMacroId, formatRuntimeImportSummary, importKeymapRuntimeObjects } from "../connection/runtime-import.js";
-import { extraRuntimeCombinationItems } from "../connection/runtime-display.js";
+import {
+  comboDeleteLivePlan,
+  comboHighlightIndexes,
+  extraRuntimeCombinationItems,
+  isLiveRuntimeCombo,
+  markSuppressedKeymapCombos,
+  runtimeOverlayCounts,
+} from "../connection/runtime-display.js";
+import { runtimeOverlayIsLive, waitForRuntimeStatus } from "../connection/runtime-activation.js";
 import {
   applyRuntimeDocument,
   encodeRuntimeDocument,
@@ -198,6 +206,7 @@ const state = {
   deviceLayerCount: 0,
   flashNotice: null,
   stockBindingTexts: new Map(),
+  compiledFileLayers: [],
   runtimeDirtyKeys: new Map(),
   loadedBindings: new Map(),
 };
@@ -209,6 +218,16 @@ window.__zmkDebugState = state;
 const liveQueue = [];
 let liveBusy = false;
 let runtimeIdleWatch = 0;
+let runtimeWriteQueue = Promise.resolve();
+
+function enqueueRuntimeWrite(task) {
+  const next = runtimeWriteQueue.then(task, task);
+  runtimeWriteQueue = next.then(
+    () => {},
+    () => {}
+  );
+  return next;
+}
 
 // Layer structure changes (add/move/remove/rename) go through the stock
 // Studio Keymap RPC subsystem - a separate wire subsystem from per-key
@@ -352,11 +371,18 @@ function startRuntimeIdleWatch(expectedGeneration) {
           state.runtime.snapshot = createRuntimeDraft(live.snapshot);
           state.runtime.draft = createRuntimeDraft(live.snapshot);
         }
-        setStudioLabel("Connected · Running Configuration active", "on");
-        paintRuntimeOverlayOnEditor(state.runtime.snapshot);
-        renderKeyboard();
-        renderCombinations();
-        setStatus(`Running Configuration generation ${active} is now active.`);
+        setStudioLabel(
+          isStockRuntimeSnapshot(state.runtime.snapshot)
+            ? "Connected · stock configuration active"
+            : "Connected · Running Configuration active",
+          "on"
+        );
+        const restored = await applyActiveRuntimeToEditor();
+        setStatus(
+          restored.stock
+            ? `Stock configuration generation ${active} is now active. Key assignments restored from the keyboard.`
+            : `Running Configuration generation ${active} is now active.`
+        );
         return;
       }
       renderRuntimeChrome();
@@ -1019,6 +1045,7 @@ function renderLegend() {
 }
 
 function renderInspect(force = false) {
+  fillEditorHolesFromKeymapFile();
   renderLegend();
   const el = $("inspect");
   if (!el) return;
@@ -1045,7 +1072,7 @@ function renderInspect(force = false) {
   }
 
   const idx = [...state.selected][0];
-  const text = currentBindings()[idx]?.text ?? "&trans";
+  const text = displayBindingText(currentBindings()[idx], idx) || "&trans";
   const model = parseBinding(text);
   const view = `${state.layer}:${[...state.selected].join(",")}:${model.behavior}`;
   if (!force && el.dataset.view === view && el.contains(document.activeElement)) {
@@ -1501,16 +1528,20 @@ function comboBadgeLettersByPosition() {
       map.get(pos).push(letter);
     }
   };
+  const used = new Set();
   for (const c of state.combos) {
     if (c.deleted || !comboActiveOnLayer(c, state.layer)) continue;
+    const key = (c.positions || []).slice().sort((a, b) => a - b).join(",");
     addPositions(c.positions, nextLetter());
+    if (key) used.add(key);
   }
   for (const c of state.runtime?.draft?.combos || []) {
-    // A suppression marker's positions already carry the compiled combo's own
-    // badge above; painting a second one here would just be confusing.
-    if (c.output?.suppressCompiled) continue;
-    if (!runtimeComboActiveOnLayer(c, state.layer)) continue;
-    addPositions(stockPositionsToSelectedIndexes(state.runtime.capabilities, c.keyPositions), nextLetter());
+    if (!isLiveRuntimeCombo(c) || !runtimeComboActiveOnLayer(c, state.layer)) continue;
+    const selected = stockPositionsToSelectedIndexes(state.runtime.capabilities, c.keyPositions);
+    const key = selected.slice().sort((a, b) => a - b).join(",");
+    if (key && used.has(key)) continue;
+    addPositions(selected, nextLetter());
+    if (key) used.add(key);
   }
   return map;
 }
@@ -1536,19 +1567,19 @@ function overriddenPositionsOnCurrentLayer() {
   const studioIdx = studioLayerIndex(state.layer);
   const studioLayer = studioIdx == null ? null : state.studio.layers?.[studioIdx];
   const firmware = studioLayer ? state.stockBindingTexts?.get(studioLayer.id) : null;
-  if (!firmware) return map;
+  if (!studioLayer) return map;
   const caps = state.runtime.capabilities;
   const opts = runtimeEncodeOpts();
   for (const override of overrides) {
     if (override.layerId !== studioLayer.id) continue;
     const selected = stockToSelectedIndex(caps, override.keyPosition);
     if (selected < 0) continue;
-    const firmwareText = firmware[selected];
-    if (firmwareText == null) continue;
-    const liveText = bindingTextFromAction(override.action, opts);
-    if (liveText && !bindingsMatchForOverlay(liveText, firmwareText)) {
-      map.set(selected, { firmwareText, liveText });
-    }
+    const firmwareText =
+      firmware?.[selected] || compiledFileBinding(state.layers[state.layer]?.id, selected, state.layer) || "(compiled binding unavailable)";
+    const liveText = bindingTextFromAction(override.action, opts) || "(runtime action unavailable)";
+    // Presence in keymap_overrides is the source of truth for the marker.
+    // Baseline decoding is only explanatory text for the inspector.
+    map.set(selected, { firmwareText, liveText });
   }
   return map;
 }
@@ -1592,7 +1623,17 @@ function locallyEditedPositionsOnCurrentLayer() {
   return map;
 }
 
-function bindingTint(text, index) {
+function currentComboHighlightIndexes() {
+  return comboHighlightIndexes({
+    combos: state.combos,
+    runtimeCombos: state.runtime?.draft?.combos,
+    layerIndex: state.layer,
+    stockToSelected: (positions) =>
+      stockPositionsToSelectedIndexes(state.runtime?.capabilities, positions),
+  });
+}
+
+function bindingTint(text, index, comboTints) {
   const model = parseBinding(text);
   const ctx = inspectContext();
   const kind = classifyBinding(model, ctx);
@@ -1607,16 +1648,7 @@ function bindingTint(text, index) {
   if (kind === "hold-tap" || isHomeRowBinding(model, ctx)) return "kind-holdtap";
   const custom = (state.behaviors || []).find((b) => !b.deleted && b.id === model.behavior);
   if (custom) return custom.kind === "hold-tap" ? "kind-holdtap" : "kind-other";
-  if (
-    state.combos.some(
-      (c) => !c.deleted && c.positions.includes(index) && comboActiveOnLayer(c, state.layer)
-    ) ||
-    state.runtime?.draft?.combos.some(
-      (combo) =>
-        runtimeComboActiveOnLayer(combo, state.layer) &&
-        stockPositionsToSelectedIndexes(state.runtime.capabilities, combo.keyPositions).includes(index)
-    )
-  ) {
+  if (index >= 0 && (comboTints || currentComboHighlightIndexes()).has(index)) {
     return "kind-combo";
   }
   return "";
@@ -1725,6 +1757,7 @@ function currentMacroSeats() {
 }
 
 function renderKeyboard() {
+  fillEditorHolesFromKeymapFile();
   const svg = $("keyboard");
   const keys = state.keys;
   const bindings = currentBindings();
@@ -1738,6 +1771,7 @@ function renderKeyboard() {
   svg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.width} ${box.height}`);
   svg.replaceChildren();
   const comboBadges = comboBadgeLettersByPosition();
+  const comboTints = currentComboHighlightIndexes();
   const overrides = overriddenPositionsOnCurrentLayer();
   const edits = locallyEditedPositionsOnCurrentLayer();
 
@@ -1771,7 +1805,7 @@ function renderKeyboard() {
     }
     const seat = macroSeats.get(i);
     if (seat) rect.classList.add("macro-ref");
-    const tint = bindingTint(displayBindingText(bindings[i]), i);
+    const tint = bindingTint(displayBindingText(bindings[i], i), i, comboTints);
     if (tint && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) rect.classList.add(tint);
     if (activators.has(i)) rect.classList.add("activator");
     if (currentProtection(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
@@ -1779,7 +1813,7 @@ function renderKeyboard() {
     }
     rect.dataset.index = String(i);
 
-    const formatted = formatKeyLabel(prettyBindingLabel(displayBindingText(bindings[i])));
+    const formatted = formatKeyLabel(prettyBindingLabel(displayBindingText(bindings[i], i)));
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.setAttribute("class", "key-label");
     label.setAttribute("text-anchor", "middle");
@@ -1797,7 +1831,7 @@ function renderKeyboard() {
     const seatLabel = seat ? prettyMacroToken(seat.token) : "";
     const hold = seatLabel
       ? ""
-      : bindingHoldHint(displayBindingText(bindings[i])) || (activators.has(i) ? "HOLD" : "");
+      : bindingHoldHint(displayBindingText(bindings[i], i)) || (activators.has(i) ? "HOLD" : "");
     if (seatLabel || hold) {
       const ht = document.createElementNS("http://www.w3.org/2000/svg", "text");
       ht.setAttribute("x", cx);
@@ -2219,7 +2253,10 @@ function applyBindingField(layerIndex, changes, field, opts = {}) {
   const bindings = state.layers[layerIndex]?.bindings;
   const list = field === "before" ? [...changes].reverse() : changes;
   for (const c of list) {
-    if (bindings?.[c.index]) bindings[c.index].text = c[field];
+    if (bindings?.[c.index]) {
+      bindings[c.index].text = c[field];
+      bindings[c.index].compiledHole = false;
+    }
     queueLive(layerIndex, c.index, c[field]);
     noteRuntimeDirtyKey(layerIndex, c.index, c[field]);
   }
@@ -2292,7 +2329,7 @@ function typingInField(el) {
 }
 
 function comboKeyCaption(index) {
-  return bindingLabel(displayBindingText(currentBindings()[index])) || `P${index}`;
+  return bindingLabel(displayBindingText(currentBindings()[index], index)) || `P${index}`;
 }
 
 function comboChipLabel(combo) {
@@ -2574,7 +2611,7 @@ function openCombinationBuilder(source = null) {
     priorIdle: 150,
     flavor: "balanced",
     timeout: state.settings.comboTimeout,
-    layers: String(state.layer),
+    layers: "",
     advanced: false,
     holdChoice: null,
     hrmMode: "set",
@@ -3197,7 +3234,7 @@ function saveHoldTapFromBuilder(draft, classified, id) {
     mods: [],
     keepMods: [],
     triggerPositions: [],
-    holdOnRelease: true,
+    holdOnRelease: false,
   };
   let behavior = draft.source?.type === "hold-tap" ? draft.source.item : null;
   if (behavior && !behavior.deleted) {
@@ -3296,11 +3333,17 @@ function saveHoldTapSetFromBuilder(draft, classified, used) {
   return id;
 }
 
-async function commitRuntimeDraftLive(draft) {
+async function commitRuntimeDraftLive(draft, { progress } = {}) {
   if (!state.studio || !state.runtime) return { ok: false };
+  return enqueueRuntimeWrite(() => persistRuntimeDraft(draft, { progress }));
+}
+
+async function persistRuntimeDraft(draft, { progress } = {}) {
+  const report = progress || setStatus;
   try {
-    const { commit } = await state.studio.applyRuntimeSnapshot(draft, {
+    const { validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
       expectedActiveGeneration: state.runtime.status?.activeGeneration ?? 0,
+      onProgress: report,
     });
     const nextSnapshot = createRuntimeDraft({ ...draft, generation: commit.generation });
     state.runtime = {
@@ -3309,14 +3352,38 @@ async function commitRuntimeDraftLive(draft) {
       draft: createRuntimeDraft(nextSnapshot),
       status: commit.status || state.studio.runtimeStatus,
     };
+    const pendingNow = !runtimeOverlayIsLive(state.runtime.status, commit.generation);
+    if (pendingNow) {
+      setStudioLabel("Connected · config saved, waiting for idle", "on");
+      report(`Generation ${commit.generation} saved. Lift all keys so the keyboard can activate it.`);
+      const waited = await waitForRuntimeStatus(
+        () => state.studio.getRuntimeConfigStatus({ timeoutMs: 2000 }),
+        {
+          wantedGeneration: commit.generation,
+          onWaiting: (status) => {
+            if (state.runtime && status) state.runtime.status = status;
+            renderRuntimeChrome();
+          },
+        }
+      );
+      if (waited.status) state.runtime.status = waited.status;
+      if (!waited.ok) {
+        startRuntimeIdleWatch(commit.generation);
+        updateStudioButtons();
+        renderCombinations();
+        return {
+          ok: false,
+          pending: true,
+          commit,
+          validation,
+          error: new Error("Saved on the keyboard, but it is still waiting for idle. Lift all keys."),
+        };
+      }
+    }
     try {
       const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
       if (live?.status) state.runtime.status = live.status;
-      if (
-        live?.snapshot &&
-        (live.status?.activeGeneration || 0) >= commit.generation &&
-        (live.status?.activeGeneration || 0) > 0
-      ) {
+      if (live?.snapshot && runtimeOverlayIsLive(live.status, commit.generation)) {
         state.runtime.snapshot = createRuntimeDraft(live.snapshot);
         state.runtime.draft = createRuntimeDraft(live.snapshot);
       }
@@ -3324,24 +3391,68 @@ async function commitRuntimeDraftLive(draft) {
       // Keep the commit result if readback fails; USB may still be writing.
     }
     state.runtimeDirtyKeys = new Map();
-    const pending = state.runtime.status?.pendingGeneration === commit.generation;
+    stopRuntimeIdleWatch();
     setStudioLabel(
-      pending ? "Connected · config saved, waiting for idle" : "Connected · Running Configuration active",
+      isStockRuntimeSnapshot(state.runtime.snapshot)
+        ? "Connected · stock configuration active"
+        : "Connected · Running Configuration active",
       "on"
     );
-    if (pending) startRuntimeIdleWatch(commit.generation);
-    else stopRuntimeIdleWatch();
     updateStudioButtons();
-    renderKeyboard();
-    renderInspect();
-    renderCombinations();
-    return { ok: true, commit, pending };
+    await applyActiveRuntimeToEditor();
+    return { ok: true, pending: false, commit, validation };
   } catch (error) {
     if (error instanceof RuntimeValidationError) {
       presentRuntimeIssues(runtimeIssuesFromDiagnostics(error.diagnostics, state.runtime.capabilities), error.message);
     }
     return { ok: false, error };
   }
+}
+
+function rememberRuntimeImportIds(imported, { macros = [], combos = [] } = {}) {
+  for (const entry of imported || []) {
+    if (entry.kind === "combo") {
+      const match = combos.find((c) => c.id === entry.id) || state.combos.find((c) => c.id === entry.id);
+      if (match) match.runtimeComboId = entry.runtimeId;
+    } else if (entry.kind === "macro") {
+      const match = macros.find((m) => m.id === entry.id) || state.macros.find((m) => m.id === entry.id);
+      if (match) match.runtimeObjectId = entry.runtimeId;
+    }
+  }
+}
+
+function addCompiledComboSuppressions(draft, combos) {
+  let next = draft;
+  const skipped = [];
+  for (const combo of combos || []) {
+    if (!combo || combo.added || combo.guarded) continue;
+    const plan = comboDeleteLivePlan(combo, {
+      draft: next,
+      capabilities: state.runtime?.capabilities,
+    });
+    if (!plan.suppress) continue;
+    if (!capabilitySupportsComboSuppression(state.runtime?.capabilities)) {
+      skipped.push({
+        kind: "combo",
+        id: combo.id,
+        reason: "this firmware cannot replace a compiled combo live; update the firmware or download and flash",
+      });
+      continue;
+    }
+    next = upsertRuntimeCombo(
+      next,
+      {
+        id: nextRuntimeComboId(next),
+        selectedPositions: combo.positions,
+        timeoutMs: Number(combo.timeout) || 50,
+        layers: combo.layers,
+        output: { suppressCompiled: true },
+      },
+      state.runtime.capabilities,
+      runtimeEncodeOpts()
+    );
+  }
+  return { draft: next, skipped };
 }
 
 async function pushSavedCombinationToRuntime({ macros = [], combos = [], behaviors = [] } = {}) {
@@ -3360,33 +3471,55 @@ async function pushSavedCombinationToRuntime({ macros = [], combos = [], behavio
       studioBehaviors: state.studio?.behaviors,
       studioLayers: studioEncodeLayers(),
     });
+    const suppression = addCompiledComboSuppressions(result.draft, combos);
+    result = {
+      ...result,
+      draft: suppression.draft,
+      skipped: [...result.skipped, ...suppression.skipped],
+      blocking: suppression.skipped,
+    };
   } catch (error) {
     return { ok: false, error };
+  }
+  if (result.blocking?.length) {
+    return { ok: false, imported: result.imported, skipped: result.skipped };
   }
   state.runtime.draft = result.draft;
   renderCombinations();
   if (!result.imported.length) {
     return { ok: false, imported: result.imported, skipped: result.skipped };
   }
-  // Remembered so a later delete can target the exact draft entry instead of
-  // re-deriving it from positions/bindings, which drift as the editor changes.
-  for (const entry of result.imported) {
-    if (entry.kind === "combo") {
-      const match = combos.find((c) => c.id === entry.id);
-      if (match) match.runtimeComboId = entry.runtimeId;
-    } else if (entry.kind === "macro") {
-      const match = macros.find((m) => m.id === entry.id);
-      if (match) match.runtimeObjectId = entry.runtimeId;
-    }
-  }
+  rememberRuntimeImportIds(result.imported, { macros, combos });
   const live = await commitRuntimeDraftLive(state.runtime.draft);
   return { ok: true, imported: result.imported, skipped: result.skipped, live };
 }
 
 function liveApplyStatusMessage(label, live) {
-  if (live?.ok) return `${label} saved and applied to the keyboard.`;
+  if (live?.ok && !live.pending) return `${label} saved and is now active on the keyboard.`;
+  if (live?.pending) {
+    return `${label} saved. Lift all keys so the keyboard can activate it.`;
+  }
   const reason = live?.error?.message || live?.error;
   return `${label} is staged, but applying it to the keyboard failed${reason ? `: ${reason}` : ""}.`;
+}
+
+function combinationCanApplyLive(kind, item) {
+  if (kind === "combo") return !item?.guarded && !isUnsafeLiveComboBinding(item?.binding);
+  if (kind === "macro") return true;
+  if (kind === "hold-tap") return !item?.triggerPositions?.length;
+  return false;
+}
+
+function combinationLiveLabel(kind, item) {
+  if (kind === "macro") return `&${String(item?.id || "macro").replace(/^&/, "")}`;
+  return item?.id || kind;
+}
+
+function combinationSkipReason(runtime) {
+  if (runtime?.error?.message) return runtime.error.message;
+  const skipped = runtime?.skipped || [];
+  if (!skipped.length) return "";
+  return skipped.map((item) => item.reason || `${item.kind} ${item.id}`).join("; ");
 }
 
 async function announceSavedCombination(kind, item, { created } = {}) {
@@ -3397,14 +3530,33 @@ async function announceSavedCombination(kind, item, { created } = {}) {
     kind === "combo" && item
       ? state.macros.find((m) => !m.deleted && m.id === comboLinkedMacroId(item, state.macros.filter((x) => !x.deleted).map((x) => x.id)))
       : null;
+  const label = combinationLiveLabel(kind, item);
+  const liveCapable = combinationCanApplyLive(kind, item);
   const runtime = await pushSavedCombinationToRuntime({
     macros: kind === "macro" && item ? [item] : linkedMacro ? [linkedMacro] : [],
     combos: kind === "combo" && item ? [item] : [],
     behaviors: (kind === "hold-tap" || kind === "behavior") && item ? [item] : [],
   });
   if (runtime.ok) {
-    setStatus(liveApplyStatusMessage(item.id || kind, runtime.live));
+    clearFlashNotice();
+    setStatus(liveApplyStatusMessage(label, runtime.live));
     return true;
+  }
+  const reason = combinationSkipReason(runtime);
+  if (liveCapable && !state.runtime) {
+    clearFlashNotice();
+    setStatus(`${label} saved. Connect to apply it live.`);
+    return false;
+  }
+  if (liveCapable && state.runtime) {
+    clearFlashNotice();
+    setStatus(
+      `${label} saved locally, but it was not applied live${reason ? `: ${reason}` : "."}`
+    );
+    if (reason && isFlashRequiredReason(reason)) {
+      showFlashNeeded(kind === "hold-tap" ? "behavior" : kind, item?.id, { created });
+    }
+    return false;
   }
   if (kind === "combo") showFlashNeeded("combo", item?.id, { created });
   else if (kind === "macro") showFlashNeeded("macro", item?.id, { created });
@@ -3566,19 +3718,15 @@ async function saveCombinationBuilder() {
   renderPalette();
   const mac = state.macros.find((m) => !m.deleted && m.id === id);
   const comboWrap = state.combos.find((c) => !c.deleted && c.binding === `&${id}`);
-  if (state.runtime && (mac || comboWrap)) {
-    const runtime = await pushSavedCombinationToRuntime({
-      macros: mac ? [mac] : [],
-      combos: comboWrap ? [comboWrap] : [],
-    });
-    if (runtime.ok) {
-      setStatus(liveApplyStatusMessage(id, runtime.live));
-      return;
-    }
+  if (comboWrap) {
+    await announceSavedCombination("combo", comboWrap, { created: !!comboWrap.added });
+    return;
   }
-  if (mac?.added) showFlashNeeded("macro", id);
-  else if (comboWrap?.added) showFlashNeeded("combo", comboWrap.id);
-  else showFlashNeeded("params", `&${id}`, { created: false });
+  if (mac) {
+    await announceSavedCombination("macro", mac, { created: !!mac.added });
+    return;
+  }
+  showFlashNeeded("params", `&${id}`, { created: false });
 }
 
 function deleteCurrentCombination() {
@@ -3664,7 +3812,7 @@ function closeComboDialog() {
   renderCombos();
 }
 
-function saveComboDialog() {
+async function saveComboDialog() {
   const draft = state.comboDraft;
   if (!draft || draft.source?.guarded) {
     closeComboDialog();
@@ -3710,7 +3858,8 @@ function saveComboDialog() {
   }
   setDirty(true);
   closeComboDialog();
-  showFlashNeeded("combo", slugComboId(name, positions) || "combo", { created: !!draft.isNew });
+  const saved = state.combos.find((c) => !c.deleted && c.id === slugComboId(name, positions));
+  await announceSavedCombination("combo", saved, { created: !!draft.isNew });
 }
 
 // Recovery combos are deliberately position-only with no dependency on
@@ -3745,59 +3894,79 @@ async function deleteCombo(combo) {
     renderInspect();
   }
   if (!state.runtime) {
-    setStatus(`${comboTitle(combo)} deleted.`);
+    clearFlashNotice();
+    setStatus(`${comboTitle(combo)} deleted. Connect to remove it from the keyboard.`);
     return;
   }
-  // A stock/compiled combo (reset, studio_unlock, ...) was never a Runtime
-  // Config object to begin with - deleting it live means staging a
-  // suppress-compiled marker at the same positions instead of an ordinary
-  // delete. "Restore stock" brings it (and everything else) back.
-  if (unsafe) {
-    if (!capabilitySupportsComboSuppression(state.runtime.capabilities)) {
-      showFlashNeeded("params", comboTitle(combo), { created: false });
-      return;
+  const live = await applyComboDeletionLive(combo);
+  if (live.skipped === "unsupported-suppress") {
+    showFlashNeeded("params", comboTitle(combo), { created: false });
+    return;
+  }
+  if (live.error && !live.changed) {
+    setStatus(live.error);
+    return;
+  }
+  if (live.pending) {
+    setStatus(`${comboTitle(combo)} saved. Lift all keys so the keyboard can drop it.`);
+    return;
+  }
+  setStatus(
+    live.ok
+      ? `${comboTitle(combo)} deleted and is no longer active on the keyboard.`
+      : live.changed
+        ? `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error ? `: ${live.error}` : ""}.`
+        : `${comboTitle(combo)} deleted.`
+  );
+}
+
+async function applyComboDeletionLive(combo) {
+  const plan = comboDeleteLivePlan(combo, {
+    draft: state.runtime.draft,
+    capabilities: state.runtime.capabilities,
+  });
+  let draft = state.runtime.draft;
+  let changed = false;
+  for (const overlayId of plan.overlayIds || (plan.overlayId != null ? [plan.overlayId] : [])) {
+    try {
+      draft = deleteRuntimeCombo(draft, overlayId);
+      changed = true;
+    } catch {
+      // Already gone from the draft - still try suppress if needed.
     }
-    let draft;
+  }
+  if (plan.suppress) {
+    if (!capabilitySupportsComboSuppression(state.runtime.capabilities)) {
+      state.runtime.draft = draft;
+      return { ok: false, changed, skipped: "unsupported-suppress" };
+    }
     try {
       draft = upsertRuntimeCombo(
-        state.runtime.draft,
+        draft,
         {
-          id: nextRuntimeComboId(state.runtime.draft),
+          id: nextRuntimeComboId(draft),
           selectedPositions: combo.positions,
-          timeoutMs: 50,
+          timeoutMs: Number(combo.timeout) || 50,
+          layers: combo.layers,
           output: { suppressCompiled: true },
         },
         state.runtime.capabilities,
         runtimeEncodeOpts()
       );
+      changed = true;
     } catch (error) {
-      setStatus(error.message);
-      return;
+      return { ok: false, changed, error: error.message };
     }
-    state.runtime.draft = draft;
-    const live = await commitRuntimeDraftLive(state.runtime.draft);
-    setStatus(
-      live.ok
-        ? `${comboTitle(combo)} deleted and removed from the keyboard.`
-        : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
-    );
-    return;
   }
-  if (combo.runtimeComboId != null) {
-    try {
-      state.runtime.draft = deleteRuntimeCombo(state.runtime.draft, combo.runtimeComboId);
-    } catch {
-      // Already gone from the draft - nothing left to push.
-    }
-    const live = await commitRuntimeDraftLive(state.runtime.draft);
-    setStatus(
-      live.ok
-        ? `${comboTitle(combo)} deleted and removed from the keyboard.`
-        : `${comboTitle(combo)} deleted locally, but removing it from the keyboard failed${live.error?.message ? `: ${live.error.message}` : ""}.`
-    );
-  } else {
-    setStatus(`${comboTitle(combo)} deleted.`);
-  }
+  state.runtime.draft = draft;
+  if (!changed) return { ok: true, changed: false };
+  const live = await commitRuntimeDraftLive(draft);
+  return {
+    ok: !!live.ok,
+    pending: !!live.pending,
+    changed: true,
+    error: live.ok ? "" : live.error?.message || String(live.error || ""),
+  };
 }
 
 function toggleComboKey(index) {
@@ -4173,7 +4342,7 @@ function addMacroStep(kind) {
   renderKeyboard();
 }
 
-function saveMacroEditor() {
+async function saveMacroEditor() {
   const draft = state.macroDraft;
   if (!draft) return;
   const id = slugBehaviorId($("macro-id").value);
@@ -4200,7 +4369,8 @@ function saveMacroEditor() {
   setDirty(true);
   closeMacroEditor();
   renderPalette();
-  showFlashNeeded("macro", id, { created: !!draft.isNew });
+  const saved = state.macros.find((m) => !m.deleted && m.id === id);
+  await announceSavedCombination("macro", saved, { created: !!draft.isNew });
 }
 
 async function deleteMacro(macro) {
@@ -4516,10 +4686,86 @@ function restoreCompiledCombinationsFromKeymapFile() {
     state.behaviorInsertAt = parsed.behaviorInsertAt ?? state.behaviorInsertAt;
     state.macros = parsed.macros || [];
     state.macroInsertAt = parsed.macroInsertAt ?? state.macroInsertAt;
+    applyRuntimeSuppressionsToEditor();
     return true;
   } catch {
     return false;
   }
+}
+
+function applyRuntimeSuppressionsToEditor() {
+  if (!state.runtime) return 0;
+  return markSuppressedKeymapCombos(state.combos, state.runtime.snapshot || state.runtime.draft, {
+    capabilities: state.runtime.capabilities,
+  });
+}
+
+function isStockRuntimeSnapshot(snapshot) {
+  return !snapshot?.keymapOverrides?.length && !snapshot?.runtimeObjects?.length && !snapshot?.combos?.length;
+}
+
+function revertSessionRuntimeCombinations() {
+  state.combos = (state.combos || []).filter((item) => !item.added);
+  state.macros = (state.macros || []).filter((item) => !item.added);
+  state.behaviors = (state.behaviors || []).filter((item) => !item.added);
+  for (const item of state.combos) {
+    item.deleted = false;
+    item.edited = false;
+    delete item.runtimeComboId;
+  }
+  for (const item of state.macros) {
+    item.deleted = false;
+    item.edited = false;
+    delete item.runtimeObjectId;
+  }
+  for (const item of state.behaviors) {
+    item.deleted = false;
+    item.edited = false;
+  }
+}
+
+async function applyActiveRuntimeToEditor() {
+  if (state.studio && state.runtime) {
+    try {
+      const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
+      if (live?.status) state.runtime.status = live.status;
+      if (live?.snapshot) {
+        state.runtime.snapshot = createRuntimeDraft(live.snapshot);
+        state.runtime.draft = createRuntimeDraft(live.snapshot);
+      }
+    } catch {
+      // Keep the local snapshot if readback fails.
+    }
+  }
+  if (isStockRuntimeSnapshot(state.runtime?.snapshot) && state.studio) {
+    try {
+      await state.studio.getKeymap();
+    } catch (error) {
+      revertSessionRuntimeCombinations();
+      restoreCompiledCombinationsFromKeymapFile();
+      fillEditorHolesFromKeymapFile();
+      renderKeyboard();
+      renderInspect();
+      renderCombinations();
+      return { stock: true, error: error.message };
+    }
+    loadEditorFromKeyboard(state.studio, { replace: true });
+    if (!restoreCompiledCombinationsFromKeymapFile()) revertSessionRuntimeCombinations();
+    fillEditorHolesFromKeymapFile();
+    renderBehaviors();
+    renderMacros();
+    renderCombos();
+    renderKeyboard();
+    renderInspect();
+    return { stock: true };
+  }
+  applyRuntimeSuppressionsToEditor();
+  paintRuntimeOverlayOnEditor(state.runtime?.snapshot);
+  fillEditorHolesFromKeymapFile();
+  renderKeyboard();
+  renderInspect();
+  renderCombinations();
+  return { stock: false };
 }
 
 async function refreshRuntimeFromDevice() {
@@ -4573,22 +4819,90 @@ function fileBindingText(binding) {
   return "";
 }
 
-function displayBindingText(binding) {
-  return binding?.text ?? "";
+function displayBindingText(binding, index = null) {
+  const text = binding?.text ?? "";
+  if (index == null || !isVacantBinding(text)) return text;
+  if (binding?.compiledHole === false) return text;
+  if (positionHasRuntimeOverride(state.layer, index)) return text;
+  const fileText = compiledFileBinding(state.layers[state.layer]?.id, index, state.layer);
+  const filled = preferFileBindingIfVacant(text, fileText);
+  if (binding && filled !== text) {
+    binding.text = filled;
+    binding.compiledHole = true;
+  }
+  return filled;
 }
 
-function decodeStudioLayerBindings(studioLayer, behaviors, named) {
+function positionHasRuntimeOverride(editorLayerIndex, selectedIndex) {
+  const caps = state.runtime?.capabilities;
+  const overrides = state.runtime?.snapshot?.keymapOverrides;
+  if (!caps || !overrides?.length) return false;
+  const mapped = studioLayerIndex(editorLayerIndex);
+  const studioLayer = mapped == null ? null : state.studio?.layers?.[mapped];
+  if (!studioLayer) return false;
+  const stock = Number(caps.selectedToStockPositions?.[selectedIndex]);
+  if (!Number.isInteger(stock) || stock < 0) return false;
+  return overrides.some((override) => override.layerId === studioLayer.id && override.keyPosition === stock);
+}
+
+function snapshotCompiledFileLayers(layers) {
+  state.compiledFileLayers = (layers || []).map((layer) => ({
+    id: layer.id,
+    name: layer.id,
+    bindings: (layer.bindings || []).map((binding) => ({
+      text: binding?.text ?? binding ?? "",
+    })),
+  }));
+}
+
+function fileLayerBindings() {
+  if (state.compiledFileLayers?.length) return state.compiledFileLayers;
+  if (!state.original || !keyCount()) return null;
+  try {
+    const layers = parseKeymap(state.original, keyCount()).layers || null;
+    if (layers?.length) snapshotCompiledFileLayers(layers);
+    return state.compiledFileLayers.length ? state.compiledFileLayers : layers;
+  } catch {
+    return null;
+  }
+}
+
+function compiledFileBinding(layerId, index, fallbackIndex = -1) {
+  return fileBindingAt(fileLayerBindings(), layerId, index, fallbackIndex);
+}
+
+function decodeStudioLayerBindings(studioLayer, behaviors, named, fileLayers, editorLayerIndex) {
   const count = keyCount();
   const bindings = emptyLayerBindings(count);
   const src = studioLayer.bindings || [];
+  const layerName = studioLayer.name || named?.[editorLayerIndex]?.name || studioLayer.id;
   let skipped = 0;
   for (let i = 0; i < Math.min(count, src.length); i++) {
     const decoded = cellsToBinding(src[i], behaviors, named);
-    const next = decoded.ok && !looksLikeZeroKey(decoded.text) ? decoded.text : "&none";
+    const decodedVacant = !(decoded.ok && !looksLikeZeroKey(decoded.text));
+    let next = decodedVacant ? "&none" : decoded.text;
+    const overridden = positionHasRuntimeOverride(editorLayerIndex, i);
+    if (!overridden) {
+      next = preferFileBindingIfVacant(
+        next,
+        fileBindingAt(fileLayers, layerName, i, editorLayerIndex)
+      );
+    }
     if (next === "&none") skipped++;
     bindings[i].text = next;
+    bindings[i].compiledHole = decodedVacant && !overridden;
   }
   return { bindings, skipped, slots: Math.min(count, src.length) };
+}
+
+function fillEditorHolesFromKeymapFile() {
+  const fileLayers = fileLayerBindings();
+  if (!fileLayers?.length) return 0;
+  return fillVacantBindingsFromFile(state.layers, fileLayers, (layer, li, binding, i) => {
+    if (positionHasRuntimeOverride(li, i)) return true;
+    if (binding.compiledHole === false) return true;
+    return false;
+  });
 }
 
 function closeOpenEditors() {
@@ -4613,8 +4927,9 @@ function loadEditorFromKeyboard(client, opts = {}) {
   let skipped = 0;
   let slots = 0;
   let changed = 0;
+  const fileLayers = fileLayerBindings();
   const decodedLayers = studioLayers.map((sl, li) => {
-    const got = decodeStudioLayerBindings(sl, client.behaviors, named);
+    const got = decodeStudioLayerBindings(sl, client.behaviors, named, fileLayers, li);
     skipped += got.skipped;
     slots += got.slots;
     return {
@@ -4658,7 +4973,9 @@ function loadEditorFromKeyboard(client, opts = {}) {
   rememberStockBindings(client);
   state.runtimeDirtyKeys = new Map();
   const restoredCombinations = replace && restoreCompiledCombinationsFromKeymapFile();
+  if (!restoredCombinations) applyRuntimeSuppressionsToEditor();
   paintRuntimeOverlayOnEditor(state.runtime?.snapshot);
+  fillEditorHolesFromKeymapFile();
   captureLoadedBindingsSnapshot();
   state.source = "keyboard";
   const vsFile = bindingsDifferFromFile();
@@ -4753,6 +5070,12 @@ const FLASH_COPY = {
 };
 
 const FLASH_FOOT = "Download the keymap, put it in your firmware repo, and flash.";
+
+function clearFlashNotice() {
+  if (!state.flashNotice) return;
+  state.flashNotice = null;
+  updateFlashBanner();
+}
 
 function showFlashNeeded(kind, name, { created = true, line = "" } = {}) {
   const key = created ? kind : "params";
@@ -4984,13 +5307,28 @@ function rememberStockBindings(client = state.studio) {
     id: layer.id,
     name: displayLayerName(studioLayerId(layer, index)),
   }));
+  const fileLayers = fileLayerBindings();
+  const previous = state.stockBindingTexts;
   const map = new Map();
-  for (const layer of layers) {
+  layers.forEach((layer, li) => {
+    const decoded = decodeStudioLayerBindings(
+      layer,
+      client.behaviors,
+      named,
+      fileLayers,
+      li
+    ).bindings.map((binding) => binding.text);
+    const prev = previous.get(layer.id);
+    const layerName = layer.name || named[li]?.name || layer.id;
     map.set(
       layer.id,
-      decodeStudioLayerBindings(layer, client.behaviors, named).bindings.map((binding) => binding.text)
+      decoded.map((text, i) => {
+        if (!positionHasRuntimeOverride(li, i)) return text;
+        if (prev?.[i] && !isVacantBinding(prev[i])) return prev[i];
+        return preferFileBindingIfVacant("&none", fileBindingAt(fileLayers, layerName, i, li));
+      })
     );
-  }
+  });
   state.stockBindingTexts = map;
 }
 
@@ -5014,6 +5352,7 @@ function paintRuntimeOverlayOnEditor(snapshot) {
     const binding = state.layers[editorIndex]?.bindings?.[selected];
     if (!text || !binding) continue;
     binding.text = text;
+    binding.compiledHole = false;
     painted++;
   }
   return painted;
@@ -5093,9 +5432,15 @@ async function applyRuntimeAll() {
   let draft;
   let comboImportSkipped = [];
   try {
-    draft = overlayFromDirtyKeys(state.runtime.snapshot);
-    draft.runtimeObjects = [];
-    draft.combos = [];
+    draft = replaceDraftKeymapOverrides({
+      snapshot: state.runtime.snapshot,
+      capabilities: state.runtime.capabilities,
+      editorLayers,
+      deviceLayerIds,
+      behaviors: state.studio.behaviors,
+      studioLayers: studioEncodeLayers(),
+      compiledBindingTexts: compiledBindingTextsForDeviceLayers(deviceLayerIds),
+    });
     const live = liveComboImports();
     if (live.macros.length || live.combos.length) {
       const imported = importKeymapRuntimeObjects({
@@ -5117,8 +5462,16 @@ async function applyRuntimeAll() {
       // so without capturing this it would otherwise vanish silently once
       // `imported` goes out of scope - the exact way the combo/macro bug got
       // missed after a fully "successful" Apply.
-      comboImportSkipped = imported.skipped || [];
-      draft = imported.draft;
+      const suppression = addCompiledComboSuppressions(imported.draft, live.combos);
+      comboImportSkipped = [...(imported.skipped || []), ...suppression.skipped];
+      if (suppression.skipped.length) {
+        throw new RuntimeDraftError(
+          suppression.skipped.map((item) => `${item.kind} ${item.id}: ${item.reason}`).join("; "),
+          suppression.skipped
+        );
+      }
+      draft = suppression.draft;
+      rememberRuntimeImportIds(imported.imported, { macros: live.macros, combos: live.combos });
     }
     const local = state.runtime.draft;
     for (const object of local?.runtimeObjects || []) {
@@ -5129,16 +5482,41 @@ async function applyRuntimeAll() {
     for (const combo of local?.combos || []) {
       const objectId = combo.output?.runtimeObjectId;
       if (objectId && !findRuntimeObject(draft, objectId)) continue;
-      const key = (combo.keyPositions || []).join(",");
-      if (key && draft.combos.some((item) => (item.keyPositions || []).join(",") === key)) continue;
+      if (draft.combos.some((item) => item.id === combo.id)) continue;
       draft.combos.push(combo);
+    }
+    if (capabilitySupportsComboSuppression(state.runtime.capabilities)) {
+      for (const combo of state.combos) {
+        if (!combo.deleted || combo.added || combo.guarded) continue;
+        const plan = comboDeleteLivePlan(combo, {
+          draft,
+          capabilities: state.runtime.capabilities,
+        });
+        if (!plan.suppress) continue;
+        draft = upsertRuntimeCombo(
+          draft,
+          {
+            id: nextRuntimeComboId(draft),
+            selectedPositions: combo.positions,
+            timeoutMs: Number(combo.timeout) || 50,
+            layers: combo.layers,
+            output: { suppressCompiled: true },
+          },
+          state.runtime.capabilities,
+          runtimeEncodeOpts()
+        );
+      }
     }
     for (const combo of draft.combos) {
       const objectId = combo.output?.runtimeObjectId;
       if (objectId && !findRuntimeObject(draft, objectId)) {
         throw new RuntimeDraftError(`Combo ${combo.id} output runtime object ${objectId} is not in this snapshot`);
       }
-      if (!combo.output?.runtimeObjectId && !combo.output?.compiledBehavior) {
+      if (
+        !combo.output?.runtimeObjectId &&
+        !combo.output?.compiledBehavior &&
+        !combo.output?.suppressCompiled
+      ) {
         throw new RuntimeDraftError(`Combo ${combo.id} has no output action`);
       }
     }
@@ -5198,70 +5576,14 @@ async function applyRuntimeAll() {
 
   state.runtimeIssues = [];
   setStatus(`Saving Running Configuration (${draft.keymapOverrides.length} key overlay(s))…`);
-  let validation;
-  let commit;
-  try {
-    ({ validation, commit } = await state.studio.applyRuntimeSnapshot(draft, {
-      expectedActiveGeneration: state.runtime.status?.activeGeneration ?? 0,
-      onProgress: setStatus,
-    }));
-  } catch (error) {
-    if (error instanceof RuntimeValidationError) {
-      presentRuntimeIssues(
-        runtimeIssuesFromDiagnostics(error.diagnostics, state.runtime.capabilities),
-        error.message
-      );
-      return;
-    }
-    throw error;
+  const live = await commitRuntimeDraftLive(draft, { progress: setStatus });
+  if (!live.ok) {
+    if (!live.error) return;
+    if (live.pending) setStatus(live.error.message);
+    else if (!(live.error instanceof RuntimeValidationError)) setStatus(live.error.message || String(live.error));
+    return;
   }
-  const nextSnapshot = createRuntimeDraft({ ...draft, generation: commit.generation });
-  state.runtime = {
-    ...state.runtime,
-    snapshot: nextSnapshot,
-    draft: createRuntimeDraft(nextSnapshot),
-    status: commit.status || state.studio.runtimeStatus,
-  };
-  try {
-    const live = await state.studio.getRuntimeConfig({ timeoutMs: 8000 });
-    if (live?.status) state.runtime.status = live.status;
-    const liveGen = Math.max(
-      Number(live?.status?.pendingGeneration) || 0,
-      Number(live?.status?.activeGeneration) || 0,
-      Number(live?.snapshot?.generation) || 0
-    );
-    if (
-      live?.snapshot &&
-      (live.status?.activeGeneration || 0) >= commit.generation &&
-      (live.status?.activeGeneration || 0) > 0
-    ) {
-      state.runtime.snapshot = createRuntimeDraft(live.snapshot);
-      state.runtime.draft = createRuntimeDraft(live.snapshot);
-    }
-    if (!liveGen) {
-      setStudioLabel("Connected · Running Configuration ready", "on");
-      renderCombinations();
-      setStatus(
-        "Apply returned, but the keyboard still reports generation 0. The overlay did not stay. Keep USB connected, change one key, and Apply once more."
-      );
-      return;
-    }
-  } catch {
-    // Keep the commit result if readback fails; USB may still be writing.
-  }
-  state.runtimeDirtyKeys = new Map();
-  const pending = state.runtime.status?.pendingGeneration === commit.generation;
-  setStudioLabel(
-    pending ? "Connected · config saved, waiting for idle" : "Connected · Running Configuration active",
-    "on"
-  );
-  if (pending) startRuntimeIdleWatch(commit.generation);
-  else stopRuntimeIdleWatch();
-  updateStudioButtons();
-  renderKeyboard();
-  renderInspect();
-  renderCombinations();
-  const firmwareUsage = validation.resourceUsage;
+  const firmwareUsage = live.validation?.resourceUsage;
   const usageNote = firmwareUsage
     ? ` ${runtimeResourceRows(
         {
@@ -5285,9 +5607,7 @@ async function applyRuntimeAll() {
         .join(", ")}.`
     : "";
   setStatus(
-    `Saved Running Configuration generation ${commit.generation}` +
-      (pending ? "; waiting for keyboard idle before activation." : " and activated.") +
-      usageNote
+    `Running Configuration generation ${live.commit.generation} is now active.` + usageNote
   );
 }
 
@@ -5301,10 +5621,14 @@ async function restoreRuntimeStock() {
     setStatus("Restore stock cancelled.");
     return;
   }
+  return enqueueRuntimeWrite(() => restoreRuntimeStockNow());
+}
+
+async function restoreRuntimeStockNow() {
   setStatus("Saving stock Running Configuration generation…");
-  const reset = await state.studio.resetRuntimeConfig({
-    expectedActiveGeneration: state.runtime.snapshot.generation,
-  });
+  const expectedActiveGeneration =
+    state.runtime.status?.activeGeneration ?? state.runtime.snapshot?.generation ?? 0;
+  const reset = await state.studio.resetRuntimeConfig({ expectedActiveGeneration });
   const empty = createRuntimeDraft(
     state.studio.runtimeSnapshot || {
       persistenceSchemaVersion: state.runtime.capabilities.persistenceSchemaVersion,
@@ -5322,23 +5646,37 @@ async function restoreRuntimeStock() {
     draft: createRuntimeDraft(empty),
     status: reset.status || state.studio.runtimeStatus,
   };
-  const pending = state.runtime.status?.pendingGeneration === reset.generation;
-  setStudioLabel(
-    pending ? "Connected · stock saved, waiting for idle" : "Connected · stock configuration active",
-    "on"
-  );
-  if (pending) startRuntimeIdleWatch(reset.generation);
-  else stopRuntimeIdleWatch();
   state.flashNotice = null;
   updateFlashBanner();
   updateStudioButtons();
-  renderKeyboard();
-  renderInspect();
-  renderCombinations();
+  if (!runtimeOverlayIsLive(state.runtime.status, reset.generation)) {
+    setStudioLabel("Connected · stock saved, waiting for idle", "on");
+    setStatus(`Generation ${reset.generation} saved. Lift all keys so stock configuration can activate.`);
+    const waited = await waitForRuntimeStatus(
+      () => state.studio.getRuntimeConfigStatus({ timeoutMs: 2000 }),
+      {
+        wantedGeneration: reset.generation,
+        onWaiting: (status) => {
+          if (state.runtime && status) state.runtime.status = status;
+          renderRuntimeChrome();
+        },
+      }
+    );
+    if (waited.status) state.runtime.status = waited.status;
+    if (!waited.ok) {
+      startRuntimeIdleWatch(reset.generation);
+      renderCombinations();
+      setStatus("Stock overlay is saved, but the keyboard is still waiting for idle. Lift all keys.");
+      return;
+    }
+  }
+  stopRuntimeIdleWatch();
+  setStudioLabel("Connected · stock configuration active", "on");
+  const restored = await applyActiveRuntimeToEditor();
   setStatus(
-    `Saved stock Running Configuration generation ${reset.generation}` +
-      (pending ? "; waiting for keyboard idle before activation." : ".") +
-      " The editor still shows your local keymap."
+    restored.error
+      ? `Stock configuration generation ${reset.generation} is active, but reloading keys failed: ${restored.error}`
+      : `Stock configuration generation ${reset.generation} is now active. Key assignments restored from the keyboard.`
   );
 }
 
@@ -5376,7 +5714,7 @@ function runtimeCombinationEntries() {
     // A suppress-compiled marker is bookkeeping, not something to manage as
     // its own item - it disappears the same way it appeared (delete on the
     // stock combo it targets), or all at once via "Restore stock".
-    if (combo.output?.suppressCompiled) continue;
+    if (!isLiveRuntimeCombo(combo)) continue;
     const selected = stockPositionsToSelectedIndexes(caps, combo.keyPositions);
     items.push({
       runtime: true,
@@ -5413,13 +5751,23 @@ function runtimeOverlaySummary() {
   if (!state.runtime) return "";
   const { active, pending } = runtimeGenerationStatus();
   const snap = state.runtime.snapshot || {};
-  const keys = (snap.keymapOverrides || []).length;
-  const objects = (snap.runtimeObjects || []).length;
-  const combos = (snap.combos || []).length;
+  const counts = runtimeOverlayCounts(snap);
   const parts = [];
-  if (keys) parts.push(`${keys} key${keys === 1 ? "" : "s"} overwritten`);
-  if (combos) parts.push(`${combos} combo${combos === 1 ? "" : "s"}`);
-  if (objects) parts.push(`${objects} object${objects === 1 ? "" : "s"}`);
+  if (counts.keyOverrides) {
+    parts.push(`${counts.keyOverrides} key${counts.keyOverrides === 1 ? "" : "s"} overwritten`);
+  }
+  if (counts.comboKeys) {
+    parts.push(`${counts.comboKeys} combo key${counts.comboKeys === 1 ? "" : "s"} overlaid`);
+  }
+  if (counts.liveCombos) {
+    parts.push(`${counts.liveCombos} combo${counts.liveCombos === 1 ? "" : "s"}`);
+  }
+  if (counts.suppressedCombos) {
+    parts.push(`${counts.suppressedCombos} stock combo${counts.suppressedCombos === 1 ? "" : "s"} disabled`);
+  }
+  if (counts.runtimeObjects) {
+    parts.push(`${counts.runtimeObjects} object${counts.runtimeObjects === 1 ? "" : "s"}`);
+  }
   const contents = parts.length ? parts.join(", ") : "stock keymap only";
   return pending && pending !== active ? `${contents} — saved, waiting for idle to activate` : contents;
 }
@@ -6314,6 +6662,7 @@ function loadKeymapText(text, name = "keymap.keymap", origin = "file") {
     throw new Error(`No layer with exactly ${n} bindings found.`);
   }
   state.original = text;
+  snapshotCompiledFileLayers(parsed.layers);
   state.keymapPath = name;
   state.sourceLabel = name;
   state.layers = parsed.layers;
@@ -6324,6 +6673,7 @@ function loadKeymapText(text, name = "keymap.keymap", origin = "file") {
   state.behaviorInsertAt = parsed.behaviorInsertAt ?? -1;
   state.macros = parsed.macros || [];
   state.macroInsertAt = parsed.macroInsertAt ?? -1;
+  applyRuntimeSuppressionsToEditor();
   closeOpenEditors();
   state.layer = 0;
   state.layerMenu = null;

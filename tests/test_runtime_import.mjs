@@ -257,6 +257,49 @@ if (!lockObjectId || !lock.draft.runtimeObjects.some((item) => item.id === lockO
 }
 if (lockCombo.keyPositions.join(",") !== "2,3") throw new Error(`lock positions ${lockCombo.keyPositions}`);
 
+const editedLock = importKeymapRuntimeObjects({
+  snapshot: lock.draft,
+  capabilities,
+  macros: [
+    {
+      id: "mac_lgui_lctrl_q",
+      runtimeObjectId: lockObjectId,
+      steps: [
+        { kind: "press", keys: "&kp LGUI" },
+        { kind: "press", keys: "&kp LCTRL" },
+        { kind: "tap", keys: "&kp W" },
+        { kind: "release", keys: "&kp LCTRL" },
+        { kind: "release", keys: "&kp LGUI" },
+      ],
+    },
+  ],
+  combos: [
+    {
+      id: "combo_mac_lgui_lctrl_q",
+      runtimeComboId: lockCombo.id,
+      positions: [4, 5],
+      binding: "&kp LGUI",
+      layers: "all",
+      timeout: 60,
+    },
+  ],
+  ...encode,
+});
+if (editedLock.draft.runtimeObjects.length !== lock.draft.runtimeObjects.length) {
+  throw new Error("editing a live macro must update its remembered object instead of leaking a new one");
+}
+if (editedLock.draft.combos.length !== lock.draft.combos.length) {
+  throw new Error("editing a live combo must update its remembered combo instead of leaking a new one");
+}
+const editedObject = editedLock.draft.runtimeObjects.find((item) => item.id === lockObjectId);
+const editedCombo = editedLock.draft.combos.find((item) => item.id === lockCombo.id);
+if (!editedObject?.steps.some((step) => step.action?.compiledBehavior?.param1 === 0x07001a)) {
+  throw new Error(`remembered macro was not updated ${JSON.stringify(editedObject)}`);
+}
+if (editedCombo?.keyPositions.join(",") !== "4,5" || editedCombo.timeoutMs !== 60) {
+  throw new Error(`remembered combo was not updated ${JSON.stringify(editedCombo)}`);
+}
+
 const summary = formatRuntimeImportSummary(totem);
 if (!summary.includes("mac_lock") || !summary.includes("Skipped:") || !summary.includes("until Apply")) {
   throw new Error(summary);
