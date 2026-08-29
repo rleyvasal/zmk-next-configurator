@@ -31,7 +31,14 @@ import {
   studioLayerId,
 } from "../keymap/keymap.js";
 import { applyTheme } from "./theme.js";
-import { PROFILE_INDEX, loadProfile, layoutBounds, normalizeProfile, profileFromDtsi } from "../layouts/layout.js";
+import {
+  PROFILE_INDEX,
+  loadProfile,
+  layoutBounds,
+  normalizeProfile,
+  profileFromDtsi,
+  profileFromPhysicalKeys,
+} from "../layouts/layout.js";
 import { pickDiscovery } from "../layouts/discover.js";
 import { listGithubFiles, githubRawFile, parseGithubInput } from "../connection/github.js";
 import { listLocalFiles, readLocalFile } from "../connection/local.js";
@@ -5291,6 +5298,7 @@ function loadKeyboardIntoEditor(client) {
     setStatus(`Connected to ${client.deviceName}. Editor kept local changes. Apply loaded config to keyboard to push them.`);
     return;
   }
+  applyDevicePhysicalLayout(client);
   const loaded = loadEditorFromKeyboard(client, { replace: true });
   if (!loaded.ok) {
     setStatus(`Connected, but keyboard decode failed: ${loaded.reason}`);
@@ -5298,6 +5306,21 @@ function loadKeyboardIntoEditor(client) {
   }
   renderCombinations();
   setStatus(keyboardLoadStatus(loaded));
+}
+
+function applyDevicePhysicalLayout(client) {
+  const layout = client?.activePhysicalLayout;
+  if (!layout?.keys?.length) return false;
+  const idPart = String(layout.name || client.deviceName || "keyboard")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const profile = profileFromPhysicalKeys(layout.keys, {
+    id: `device-${idPart || "keyboard"}`,
+    name: layout.name || client.deviceName || "Connected keyboard",
+  });
+  applyProfileObject(profile, { imported: true, persist: false });
+  return true;
 }
 
 function runtimeEditorLayers() {
@@ -6956,7 +6979,7 @@ async function loadFromLocalPath(path) {
 }
 
 async function loadFromGitHub() {
-  const saved = localStorage.getItem("keymap-github") || "rleyvasal/totem-zmk-config";
+  const saved = localStorage.getItem("keymap-github") || "";
   const input = window.prompt("GitHub repo or local path", saved);
   if (!input) return;
   const ref = parseGithubInput(input);
@@ -6965,7 +6988,7 @@ async function loadFromGitHub() {
     return;
   }
   if (!ref) {
-    setStatus("Need owner/repo (e.g. rleyvasal/totem-zmk-config) or a local folder path.");
+    setStatus("Need a GitHub owner/repo (for example, your-name/zmk-config) or a local folder path.");
     return;
   }
   setStatus(`Scanning ${ref.owner}/${ref.repo}…`);

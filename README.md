@@ -17,7 +17,25 @@ zmk-next-configurator/
 └── tests/
 ```
 
-## Run
+## Download and run
+
+Download the latest `.zip` or `.tar.gz` from
+[GitHub Releases](https://github.com/rleyvasal/zmk-next-configurator/releases),
+extract it, and launch the file for your platform:
+
+- macOS: double-click `start.command`
+- Linux: run `./start.sh`
+- Windows: double-click `start.bat`
+
+Python 3 is the only requirement. The launcher starts a local server bound to
+`127.0.0.1` and opens the configurator in your browser. Nothing is uploaded to
+a hosted ZMK Next service, and no VPS or installation is required. Use a
+Chromium-based browser for the Web Serial **Connect** feature.
+
+macOS may quarantine an unsigned downloaded script. If double-clicking is
+blocked, Control-click `start.command`, choose **Open**, and confirm once.
+
+## Run from source
 
 From this repo:
 

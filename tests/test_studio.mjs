@@ -1,4 +1,4 @@
-import { encodeUint32, encodeSint32, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
+import { encodeUint32, encodeSint32, encodeString, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
 import { frameBytes, deframeAll, parseResponse, StudioClient } from "../src/connection/studio.js";
 import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile, layerNameKey, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
 
@@ -244,6 +244,42 @@ const readbackResponse = parseResponse(
 const parsedReadback = readbackResponse.keymap.layers[0].bindings[0];
 if (parsedReadback.behaviorId !== 7 || parsedReadback.rawBehaviorId !== zigzag32(7)) {
   throw new Error(`sint32 readback ${JSON.stringify(parsedReadback)}`);
+}
+
+const physicalKey = concatBytes([
+  encodeSint32(1, 100),
+  encodeSint32(2, 100),
+  encodeSint32(3, -25),
+  encodeSint32(4, 75),
+  encodeSint32(5, -10),
+  encodeSint32(6, 50),
+  encodeSint32(7, 60),
+]);
+const physicalResponse = parseResponse(
+  encodeSub(
+    1,
+    concatBytes([
+      encodeUint32(1, 9),
+      encodeSub(
+        5,
+        encodeSub(
+          6,
+          concatBytes([
+            encodeUint32(1, 0),
+            encodeSub(2, concatBytes([encodeString(1, "Generic 40"), encodeSub(2, physicalKey)])),
+          ])
+        )
+      ),
+    ])
+  )
+);
+const parsedPhysical = physicalResponse.physicalLayouts.layouts[0];
+if (parsedPhysical.name !== "Generic 40") throw new Error(`physical layout name ${JSON.stringify(parsedPhysical)}`);
+if (
+  JSON.stringify(parsedPhysical.keys[0]) !==
+  JSON.stringify({ w: 100, h: 100, x: -25, y: 75, r: -10, rx: 50, ry: 60 })
+) {
+  throw new Error(`physical layout key ${JSON.stringify(parsedPhysical.keys[0])}`);
 }
 
 // SetLayerBindingResponse is a plain enum on the wire (varint), not a

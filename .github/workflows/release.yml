@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run tests
+        run: |
+          for test_file in tests/test_*.mjs; do
+            echo "== $test_file =="
+            node "$test_file"
+          done
+      - name: Build downloadable archives
+        run: |
+          package_dir="dist/zmk-next-configurator"
+          mkdir -p "$package_dir"
+          cp -R apps src layouts examples "$package_dir/"
+          cp README.md LICENSE start.sh start.command start.bat "$package_dir/"
+          chmod +x "$package_dir/start.sh" "$package_dir/start.command" "$package_dir/apps/web/serve.py"
+          (cd dist && zip -qr zmk-next-configurator.zip zmk-next-configurator)
+          tar -czf dist/zmk-next-configurator.tar.gz -C dist zmk-next-configurator
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          dist/zmk-next-configurator.zip
+          dist/zmk-next-configurator.tar.gz
+          --generate-notes
+          --title "ZMK Next Configurator $GITHUB_REF_NAME"
