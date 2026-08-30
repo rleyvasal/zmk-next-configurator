@@ -757,10 +757,19 @@ export function cellsToBinding(cell, behaviors, layers) {
   // reclassifying a layer-tap as a mouse click because its layer number
   // happens to match a button bit is never correct, regardless of the
   // numeric coincidence.
-  const declaredLayer = paramKinds(behavior.param1).layer;
+  const declaredParam1 = paramKinds(behavior.param1);
+  const declaredLayer = declaredParam1.layer;
   const asMove = !declaredLayer && nameFromTable(cell.param1, MOUSE_MOVE);
   const asScroll = !declaredLayer && nameFromTable(cell.param1, MOUSE_SCROLL);
-  const asBtn = !declaredLayer && nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
+  // Small Bluetooth command values overlap mouse-button bit flags exactly:
+  // BT_NXT=1/LCLK, BT_PRV=2/RCLK, BT_CLR_ALL=4/MCLK. Only infer a mouse
+  // button when the resolved behavior has no declared param1 semantics.
+  const asBtn =
+    !declaredLayer &&
+    !declaredParam1.hid &&
+    !declaredParam1.constants.size &&
+    !declaredParam1.nil &&
+    nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
   if (asMove && name !== "mmv") {
     const mmv = findBehavior(behaviors, "mmv");
     if (mmv) {
@@ -802,6 +811,7 @@ export function cellsToBinding(cell, behaviors, layers) {
     const cmd = Object.entries(BT_CMD).find(([, v]) => v === Number(cell.param1));
     if (cmd) args[0] = cmd[0];
     if (args[0] === "BT_SEL" && args[1] == null) args[1] = String(Number(cell.param2) || 0);
+    else if (args[0] !== "BT_SEL") args.length = Math.min(args.length, 1);
   }
   if (name === "mmv" || name === "msc" || name === "mkp") {
     const table = name === "mmv" ? MOUSE_MOVE : name === "msc" ? MOUSE_SCROLL : MOUSE_BTN;

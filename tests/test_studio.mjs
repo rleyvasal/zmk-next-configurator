@@ -367,6 +367,26 @@ const btBack = cellsToBinding(
   layers
 );
 if (!btBack.ok || btBack.text !== "&bt BT_SEL 0") throw new Error(`bt after apply ${JSON.stringify(btBack)}`);
+for (const [command, value] of [
+  ["BT_CLR", 0],
+  ["BT_NXT", 1],
+  ["BT_PRV", 2],
+  ["BT_CLR_ALL", 4],
+  ["BT_DISC", 5],
+]) {
+  const decoded = cellsToBinding(
+    { behaviorId: 11, rawBehaviorId: zigzag32(11), param1: value, param2: 0 },
+    afterApply,
+    layers
+  );
+  if (!decoded.ok || decoded.text !== `&bt ${command}`) {
+    throw new Error(`bt ${command} must not decode as a mouse button ${JSON.stringify(decoded)}`);
+  }
+  const encoded = bindingToCells(`&bt ${command}`, afterApply, layers);
+  if (!encoded.ok || encoded.binding.behaviorId !== 11 || encoded.binding.param1 !== value) {
+    throw new Error(`bt ${command} roundtrip ${JSON.stringify(encoded)}`);
+  }
+}
 if (resolveLayerId("CODE", [{ id: 1, name: "code_layer" }]) !== 1) throw new Error("CODE from code_layer");
 if (resolveLayerId("NAV", [{ id: 2, name: "" }, { id: 2, name: "nav_layer" }]) !== 2) throw new Error("NAV");
 const kpWithNil = cellsToBinding({ behaviorId: 4, rawBehaviorId: 4, param1: 0x070019, param2: 0 }, mixed, layers);
