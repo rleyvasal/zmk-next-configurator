@@ -59,7 +59,7 @@ if (!importedKinds.includes("macro:mac_lock") || !importedKinds.includes("macro:
   throw new Error(`totem imported ${importedKinds}`);
 }
 if (!totem.imported.some((item) => item.kind === "combo" && item.id === "combo_reset_left")) {
-  throw new Error(`missing all-layer reset combo ${JSON.stringify(totem.imported)}`);
+  throw new Error(`missing base-layer reset combo ${JSON.stringify(totem.imported)}`);
 }
 const skippedIds = totem.skipped.map((item) => item.id);
 if (!skippedIds.includes("hml") || !skippedIds.includes("hmr")) {
@@ -68,6 +68,10 @@ if (!skippedIds.includes("hml") || !skippedIds.includes("hmr")) {
 const escCombo = totem.draft.combos.find((combo) => combo.keyPositions.join(",") === "0,1");
 if (!escCombo || escCombo.layerMask !== 1) {
   throw new Error(`layered combo_esc should import on BASE only ${JSON.stringify(escCombo)}`);
+}
+const resetCombo = totem.draft.combos.find((combo) => combo.keyPositions.join(",") === "20,21");
+if (!resetCombo || resetCombo.layerMask !== 1) {
+  throw new Error(`combo_reset_left should import on BASE only ${JSON.stringify(resetCombo)}`);
 }
 if (!totem.skipped.some((item) => item.id === "combo_studio_unlock" && /ifdef/.test(item.reason))) {
   throw new Error("guarded studio combo must be skipped");

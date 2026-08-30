@@ -82,9 +82,9 @@ if (!suppressExtras.some((item) => item.positions?.join(",") === "0,4")) {
 const highlighted = comboHighlightIndexes({
   combos: [
     { id: "combo_esc", positions: [0, 1], layers: [0], deleted: true },
-    { id: "combo_reset_left", positions: [20, 21], layers: "all", deleted: true },
-    { id: "combo_host_log_dump", positions: [20, 22], layers: "all", deleted: true },
-    { id: "combo_studio_unlock", positions: [0, 4], layers: "all", deleted: false },
+    { id: "combo_reset_left", positions: [20, 21], layers: [0], deleted: true },
+    { id: "combo_host_log_dump", positions: [20, 22], layers: [0], deleted: true },
+    { id: "combo_studio_unlock", positions: [0, 4], layers: [0], deleted: false },
   ],
   runtimeCombos: [
     { keyPositions: [20, 21], layerMask: 0, output: { suppressCompiled: true } },
