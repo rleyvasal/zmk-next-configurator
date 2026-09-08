@@ -442,6 +442,58 @@ button:disabled {
   font-weight: 700;
 }
 
+.session > .kb-log {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kb-log-status {
+  color: var(--muted);
+  font-size: 0.68rem;
+  margin: 0 0 0.3rem;
+}
+
+.kb-log-lines {
+  flex: 1 1 auto;
+  min-height: 4.5rem;
+  max-height: 11rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.62rem;
+  line-height: 1.35;
+  font-family: var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kb-log-lines .fail { color: var(--danger); }
+.kb-log-lines .evict { color: #fbbf24; }
+.kb-log-lines .ok { color: var(--ok); }
+.kb-log-lines .watch { color: var(--accent); }
+.kb-log-lines .boot { color: var(--muted); }
+
+.kb-log-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.kb-log-btn {
+  padding: 0.18rem 0.45rem;
+  font-size: 0.68rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 #layout-profile {
   width: 100%;
   padding: 0.3rem 0.4rem;

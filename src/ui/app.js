@@ -81,6 +81,7 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
+import { KeyboardConsole, appendLogLine } from "../connection/console-log.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -217,6 +218,7 @@ const state = {
   compiledFileLayers: [],
   runtimeDirtyKeys: new Map(),
   loadedBindings: new Map(),
+  kbConsole: null,
 };
 
 // Debug hook - inspect live state.studio.layers / state.layers from devtools
@@ -5257,6 +5259,46 @@ async function probeRuntimeConfig(client) {
 // returning; `silent` (used for the on-load auto-connect attempt, where
 // "no keyboard plugged in yet" is a normal outcome, not an error) skips that
 // reporting and the "Connecting…" label entirely.
+function setKbLogStatus(text) {
+  const el = $("kb-log-status");
+  if (el) el.textContent = text;
+}
+
+function showKbLogButtons({ grant = false, clear = false } = {}) {
+  const grantBtn = $("kb-log-grant");
+  const clearBtn = $("kb-log-clear");
+  if (grantBtn) grantBtn.hidden = !grant;
+  if (clearBtn) clearBtn.hidden = !clear;
+}
+
+async function attachKeyboardLog(client) {
+  const lines = $("kb-log-lines");
+  if (state.kbConsole) {
+    await state.kbConsole.close();
+    state.kbConsole = null;
+  }
+  const consoleLog = new KeyboardConsole({
+    onLine: (line) => appendLogLine(lines, line),
+    onStatus: (status, detail) => {
+      if (status === "live") {
+        setKbLogStatus("Streaming printk from the console CDC.");
+        showKbLogButtons({ grant: false, clear: true });
+      } else if (status === "error") {
+        setKbLogStatus(detail || "Console port closed.");
+        showKbLogButtons({ grant: true, clear: true });
+      } else {
+        showKbLogButtons({ grant: true, clear: Boolean(lines?.childElementCount) });
+      }
+    },
+  });
+  state.kbConsole = consoleLog;
+  const attached = await consoleLog.attachBeside(client.port);
+  if (!attached) {
+    setKbLogStatus("RPC is up. Grant the other serial port (console, often usbmodem101) to stream totem_ble lines.");
+    showKbLogButtons({ grant: true, clear: false });
+  }
+}
+
 async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
   if (!silent) setStudioLabel("Connecting…");
   try {
@@ -5267,6 +5309,7 @@ async function establishStudioConnection({ connector = connectStudio, silent = f
     rememberStockBindings(client);
     state.runtimeDirtyKeys = new Map();
     state.runtime = await probeRuntimeConfig(client);
+    await attachKeyboardLog(client);
     const deviceLabel = $("runtime-banner-device");
     if (deviceLabel) deviceLabel.textContent = client.deviceName || state.profile?.name || "Keyboard";
     setStudioLabel(state.runtime ? "Connected · Running Configuration ready" : "Connected", "on");
@@ -7206,6 +7249,20 @@ function boot() {
     $("search").addEventListener("input", renderPalette);
     $("load-keyboard")?.addEventListener("click", () => {
       connectToKeyboard().catch((err) => setStatus(err.message));
+    });
+    $("kb-log-grant")?.addEventListener("click", () => {
+      const log = state.kbConsole;
+      if (!log) return;
+      log.requestPort()
+        .then(() => setKbLogStatus("Streaming printk from the console CDC."))
+        .catch((err) => {
+          if (err?.name === "NotFoundError") return;
+          setKbLogStatus(err.message);
+        });
+    });
+    $("kb-log-clear")?.addEventListener("click", () => {
+      const lines = $("kb-log-lines");
+      if (lines) lines.replaceChildren();
     });
     $("load-github")?.addEventListener("click", () => {
       loadFromGitHub().catch((err) => setStatus(err.message));
