@@ -5303,6 +5303,35 @@ async function probeRuntimeConfig(client) {
 // returning; `silent` (used for the on-load auto-connect attempt, where
 // "no keyboard plugged in yet" is a normal outcome, not an error) skips that
 // reporting and the "Connecting…" label entirely.
+const KB_LOG_OPEN_KEY = "keymap-kb-log-open";
+
+function kbLogIsOpen() {
+  try {
+    return localStorage.getItem(KB_LOG_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setKbLogOpen(open) {
+  const section = $("kb-log");
+  const body = $("kb-log-body");
+  const toggle = $("kb-log-toggle");
+  if (section) section.classList.toggle("collapsed", !open);
+  if (body) body.hidden = !open;
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  try {
+    localStorage.setItem(KB_LOG_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function setKbLogLive(on) {
+  const el = $("kb-log-live");
+  if (el) el.hidden = !on;
+}
+
 function setKbLogStatus(text) {
   const el = $("kb-log-status");
   if (el) el.textContent = text;
@@ -5331,6 +5360,7 @@ async function attachKeyboardLog(client) {
   client.onBattery = (line) => setKbBattery(line);
   setKbLogStatus("USB log off. Enable to stream printk. Remap still works.");
   showKbLogButtons({ enable: true, disable: false, clear: true });
+  setKbLogLive(false);
 }
 
 async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
@@ -7284,6 +7314,10 @@ function boot() {
     $("load-keyboard")?.addEventListener("click", () => {
       connectToKeyboard().catch((err) => setStatus(err.message));
     });
+    setKbLogOpen(kbLogIsOpen());
+    $("kb-log-toggle")?.addEventListener("click", () => {
+      setKbLogOpen(!kbLogIsOpen());
+    });
     $("kb-log-clear")?.addEventListener("click", () => {
       const lines = $("kb-log-lines");
       if (lines) lines.replaceChildren();
@@ -7295,6 +7329,8 @@ function boot() {
         state.kbLogOn = true;
         setKbLogStatus("USB log on. Disable if typing gets jumpy.");
         showKbLogButtons({ enable: false, disable: true, clear: true });
+        setKbLogLive(true);
+        setKbLogOpen(true);
       }).catch((err) => setStatus(err.message));
     });
     $("kb-log-off")?.addEventListener("click", () => {
@@ -7304,6 +7340,7 @@ function boot() {
         state.kbLogOn = false;
         setKbLogStatus("USB log off. Remap still works.");
         showKbLogButtons({ enable: true, disable: false, clear: true });
+        setKbLogLive(false);
       }).catch((err) => setStatus(err.message));
     });
     $("load-github")?.addEventListener("click", () => {

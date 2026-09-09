@@ -449,6 +449,50 @@ button:disabled {
   flex-direction: column;
 }
 
+.kb-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.kb-log-toggle h3 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.kb-log-live {
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ok);
+}
+
+.kb-log-chevron {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+.kb-log.collapsed .kb-log-chevron {
+  transform: rotate(-45deg);
+}
+
+.kb-log-body[hidden] {
+  display: none;
+}
+
 .kb-log-status {
   color: var(--muted);
   font-size: 0.68rem;

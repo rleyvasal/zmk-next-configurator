@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Next Configurator</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=84" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=85" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -80,15 +80,21 @@
           <h3>Keyboard</h3>
           <select id="layout-profile" aria-label="Layout profile"></select>
         </section>
-        <section class="side-block kb-log" id="kb-log">
-          <h3>Keyboard log</h3>
-          <div class="kb-log-status" id="kb-log-status">Connect over USB. Log is off until you enable it. Off on Bluetooth.</div>
-          <p class="kb-log-legend">idx=-19 split · 0x08 timeout · 0x13 we kicked a host · active_up=0 selected computer down · level=4 Mac LE Secure Connections · level=2 split Just Works · hid=usb/ble · rssi more negative = weaker (−40 to −80 typical)</p>
-          <pre id="kb-log-lines" class="kb-log-lines" aria-live="polite"></pre>
-          <div class="kb-log-actions">
-            <button type="button" id="kb-log-on" class="kb-log-btn" hidden>Enable log</button>
-            <button type="button" id="kb-log-off" class="kb-log-btn" hidden>Disable log</button>
-            <button type="button" id="kb-log-clear" class="kb-log-btn" hidden>Clear</button>
+        <section class="side-block kb-log collapsed" id="kb-log">
+          <button type="button" id="kb-log-toggle" class="kb-log-toggle" aria-expanded="false" aria-controls="kb-log-body">
+            <h3>Keyboard log</h3>
+            <span id="kb-log-live" class="kb-log-live" hidden>live</span>
+            <span class="kb-log-chevron" aria-hidden="true"></span>
+          </button>
+          <div id="kb-log-body" class="kb-log-body" hidden>
+            <div class="kb-log-status" id="kb-log-status">Connect over USB. Log is off until you enable it. Off on Bluetooth.</div>
+            <p class="kb-log-legend">idx=-19 split · 0x08 timeout · 0x13 we kicked a host · active_up=0 selected computer down · level=4 Mac LE Secure Connections · level=2 split Just Works · hid=usb/ble · rssi more negative = weaker (−40 to −80 typical)</p>
+            <pre id="kb-log-lines" class="kb-log-lines" aria-live="polite"></pre>
+            <div class="kb-log-actions">
+              <button type="button" id="kb-log-on" class="kb-log-btn" hidden>Enable log</button>
+              <button type="button" id="kb-log-off" class="kb-log-btn" hidden>Disable log</button>
+              <button type="button" id="kb-log-clear" class="kb-log-btn" hidden>Clear</button>
+            </div>
           </div>
         </section>
         <div class="inspect" id="inspect">
@@ -688,7 +694,7 @@
     <script type="module">
       import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=90").catch((err) => {
+      import("../../src/ui/app.js?v=91").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);
