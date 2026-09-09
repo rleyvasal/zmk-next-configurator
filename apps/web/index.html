@@ -688,7 +688,7 @@
     <script type="module">
       import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=89").catch((err) => {
+      import("../../src/ui/app.js?v=90").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

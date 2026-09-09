@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeProfile } from "../src/layouts/layout.js";
+import { normalizeProfile, PROFILE_INDEX } from "../src/layouts/layout.js";
 import { parseKeymap, emptyLayerBindings, formatLayerNode } from "../src/keymap/keymap.js";
 import { clickKeyAction } from "../src/core/drag.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+if (!PROFILE_INDEX.some((p) => p.id === "totem") || !PROFILE_INDEX.some((p) => p.id === "example-split")) {
+  throw new Error(`PROFILE_INDEX ${JSON.stringify(PROFILE_INDEX)}`);
+}
 
 const totem = normalizeProfile(JSON.parse(readFileSync(join(root, "layouts/totem.json"), "utf8")));
 if (totem.id !== "totem" || totem.keyCount !== 38) throw new Error("totem profile");
