@@ -43,6 +43,9 @@ const Fr = FIELDS.runtime_config;
 const SOF = 0xab;
 const ESC = 0xac;
 const EOF = 0xad;
+const LOG_PREFIX = 0x4c; // 'L' — printk muxed onto the Studio CDC
+const BAT_PREFIX = 0x42; // 'B' — battery snapshot, independent of Enable log
+const CTL_PREFIX = 0x43; // 'C' — USB log on/off (host → device)
 
 export function frameBytes(payload) {
   const out = [SOF];
@@ -283,8 +286,10 @@ function parseResponse(bytes) {
 }
 
 export class StudioClient {
-  constructor(port) {
+  constructor(port, { onLog, onBattery } = {}) {
     this.port = port;
+    this.onLog = onLog;
+    this.onBattery = onBattery;
     this.nextId = 1;
     this.pending = new Map();
     this.frameState = { mode: "idle", buf: [] };
@@ -301,6 +306,7 @@ export class StudioClient {
   }
 
   async readLoop() {
+    const decoder = new TextDecoder();
     try {
       while (!this.closed) {
         const { value, done } = await this.reader.read();
@@ -309,6 +315,16 @@ export class StudioClient {
         const { frames, state } = deframeAll(value, this.frameState);
         this.frameState = state;
         for (const frame of frames) {
+          if (frame.length && frame[0] === LOG_PREFIX) {
+            const line = decoder.decode(frame.slice(1));
+            if (line) this.onLog?.(line);
+            continue;
+          }
+          if (frame.length && frame[0] === BAT_PREFIX) {
+            const line = decoder.decode(frame.slice(1));
+            if (line) this.onBattery?.(line);
+            continue;
+          }
           let parsed;
           try {
             parsed = parseResponse(frame);
@@ -344,7 +360,7 @@ export class StudioClient {
         reject(
           new Error(
             timeoutMessage ||
-              "Studio RPC timed out. Pick the silent RPC port (often cu.usbmodem104), not the printk console (101). Close zmk.studio / Helium first."
+              "Studio RPC timed out. Pick Totem Home. Close zmk.studio / Helium first."
           )
         );
       }, timeoutMs);
@@ -376,6 +392,11 @@ export class StudioClient {
     }
     if (resp.noResponse) throw new Error("Studio sent no_response");
     return resp;
+  }
+
+  async setUsbLog(on) {
+    const payload = Uint8Array.from([CTL_PREFIX, on ? 0x31 : 0x30]);
+    await this.writer.write(frameBytes(payload));
   }
 
   async handshake() {

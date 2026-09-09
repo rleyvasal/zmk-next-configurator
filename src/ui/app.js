@@ -81,7 +81,7 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
-import { KeyboardConsole, appendLogLine } from "../connection/console-log.js";
+import { appendLogLine, parseBatteryLine } from "../connection/console-log.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -469,6 +469,50 @@ function setStudioLabel(text, kind = "") {
     banner.hidden = !state.studio;
     banner.className = `runtime-banner ${kind}`.trim();
     conn.textContent = text;
+  }
+  if (!state.studio) setKbBattery(null);
+}
+
+function setKbBattery(line) {
+  const wrap = $("kb-batt");
+  const leftEl = $("kb-batt-left");
+  const rightEl = $("kb-batt-right");
+  if (!wrap || !leftEl || !rightEl) return;
+  const parsed = parseBatteryLine(line);
+  if (!parsed) {
+    wrap.hidden = true;
+    leftEl.textContent = "L —";
+    rightEl.textContent = "R —";
+    leftEl.className = "kb-batt-chip";
+    rightEl.className = "kb-batt-chip";
+    return;
+  }
+  wrap.hidden = false;
+  if (parsed.leftUsb && parsed.left != null) {
+    leftEl.textContent = `L ${parsed.left}%`;
+    leftEl.className = parsed.left <= 15 ? "kb-batt-chip usb low" : "kb-batt-chip usb";
+    leftEl.title = "Last left-cell reading before USB. Charge voltage is not SoC.";
+  } else if (parsed.leftUsb) {
+    leftEl.textContent = "L USB";
+    leftEl.className = "kb-batt-chip usb";
+    leftEl.title = "Left is on USB. Unplug once so we can remember a cell reading.";
+  } else if (parsed.left == null) {
+    leftEl.textContent = "L —";
+    leftEl.className = "kb-batt-chip";
+    leftEl.title = "";
+  } else {
+    leftEl.textContent = `L ${parsed.left}%`;
+    leftEl.className = parsed.left <= 15 ? "kb-batt-chip low" : "kb-batt-chip";
+    leftEl.title = "Left half cell";
+  }
+  if (parsed.right == null) {
+    rightEl.textContent = "R —";
+    rightEl.className = "kb-batt-chip";
+    rightEl.title = "Right half has not reported yet";
+  } else {
+    rightEl.textContent = `R ${parsed.right}%`;
+    rightEl.className = parsed.right <= 15 ? "kb-batt-chip low" : "kb-batt-chip";
+    rightEl.title = "Right half cell";
   }
 }
 
@@ -5264,10 +5308,12 @@ function setKbLogStatus(text) {
   if (el) el.textContent = text;
 }
 
-function showKbLogButtons({ grant = false, clear = false } = {}) {
-  const grantBtn = $("kb-log-grant");
+function showKbLogButtons({ enable = false, disable = false, clear = false } = {}) {
+  const onBtn = $("kb-log-on");
+  const offBtn = $("kb-log-off");
   const clearBtn = $("kb-log-clear");
-  if (grantBtn) grantBtn.hidden = !grant;
+  if (onBtn) onBtn.hidden = !enable;
+  if (offBtn) offBtn.hidden = !disable;
   if (clearBtn) clearBtn.hidden = !clear;
 }
 
@@ -5277,26 +5323,14 @@ async function attachKeyboardLog(client) {
     await state.kbConsole.close();
     state.kbConsole = null;
   }
-  const consoleLog = new KeyboardConsole({
-    onLine: (line) => appendLogLine(lines, line),
-    onStatus: (status, detail) => {
-      if (status === "live") {
-        setKbLogStatus("Streaming printk from the console CDC.");
-        showKbLogButtons({ grant: false, clear: true });
-      } else if (status === "error") {
-        setKbLogStatus(detail || "Console port closed.");
-        showKbLogButtons({ grant: true, clear: true });
-      } else {
-        showKbLogButtons({ grant: true, clear: Boolean(lines?.childElementCount) });
-      }
-    },
-  });
-  state.kbConsole = consoleLog;
-  const attached = await consoleLog.attachBeside(client.port);
-  if (!attached) {
-    setKbLogStatus("RPC is up. Grant the other serial port (console, often usbmodem101) to stream totem_ble lines.");
-    showKbLogButtons({ grant: true, clear: false });
-  }
+  state.kbLogOn = false;
+  client.onLog = (line) => {
+    appendLogLine(lines, line);
+    if (/totem_batt /.test(line)) setKbBattery(line);
+  };
+  client.onBattery = (line) => setKbBattery(line);
+  setKbLogStatus("USB log off. Enable to stream printk. Remap still works.");
+  showKbLogButtons({ enable: true, disable: false, clear: true });
 }
 
 async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
@@ -7250,19 +7284,27 @@ function boot() {
     $("load-keyboard")?.addEventListener("click", () => {
       connectToKeyboard().catch((err) => setStatus(err.message));
     });
-    $("kb-log-grant")?.addEventListener("click", () => {
-      const log = state.kbConsole;
-      if (!log) return;
-      log.requestPort()
-        .then(() => setKbLogStatus("Streaming printk from the console CDC."))
-        .catch((err) => {
-          if (err?.name === "NotFoundError") return;
-          setKbLogStatus(err.message);
-        });
-    });
     $("kb-log-clear")?.addEventListener("click", () => {
       const lines = $("kb-log-lines");
       if (lines) lines.replaceChildren();
+    });
+    $("kb-log-on")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.setUsbLog) return;
+      client.setUsbLog(true).then(() => {
+        state.kbLogOn = true;
+        setKbLogStatus("USB log on. Disable if typing gets jumpy.");
+        showKbLogButtons({ enable: false, disable: true, clear: true });
+      }).catch((err) => setStatus(err.message));
+    });
+    $("kb-log-off")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.setUsbLog) return;
+      client.setUsbLog(false).then(() => {
+        state.kbLogOn = false;
+        setKbLogStatus("USB log off. Remap still works.");
+        showKbLogButtons({ enable: true, disable: false, clear: true });
+      }).catch((err) => setStatus(err.message));
     });
     $("load-github")?.addEventListener("click", () => {
       loadFromGitHub().catch((err) => setStatus(err.message));
@@ -7548,7 +7590,7 @@ function boot() {
         setStatus(err.message);
       }
     });
-    const serialHint = "Web Serial. Pick the silent ZMK Studio RPC port, not printk. Close zmk.studio first.";
+    const serialHint = "Web Serial. Pick Totem Home. Close zmk.studio first.";
     if ($("load-keyboard")) $("load-keyboard").title = serialHint;
     if (!("serial" in navigator)) {
       if ($("load-keyboard")) $("load-keyboard").disabled = true;
