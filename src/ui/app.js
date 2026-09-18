@@ -521,9 +521,7 @@ function updateStudioButtons() {
   $("studio-apply").disabled = !on || !state.configLoaded;
   const hint = $("live-hint");
   if (hint) {
-    hint.innerHTML = state.runtime
-      ? "<strong>Combinations</strong> still use trigger keys on the layout and an output from the palette. Advanced is for mod-morphs, tap-dances, and extra timing. Apply saves one snapshot; it activates when the keyboard is idle."
-      : "<strong>Live Apply</strong> works for existing bindings only. New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.";
+    hint.innerHTML = "<strong>Live Apply</strong> saves changes to your keyboard. Flash is needed for custom bindings and pointer move/scroll.";
   }
 }
 
@@ -1095,9 +1093,7 @@ function keycodeList() {
 }
 
 function renderLegend() {
-  const el = $("color-legend");
-  if (!el) return;
-  el.classList.toggle("compact", state.selected.size > 0);
+  // The legend is intentionally stable: selection never hides key types.
 }
 
 function renderInspect(force = false) {

@@ -878,7 +878,7 @@ export function bindingLabel(text) {
     return parts[1] || "BT";
   }
   if (parts[0] === "&mmv") {
-    return { MOVE_UP: "↑", MOVE_DOWN: "↓", MOVE_LEFT: "←", MOVE_RIGHT: "→" }[parts[1]] || parts[1] || "mmv";
+    return { MOVE_UP: "Mouse ↑", MOVE_DOWN: "Mouse ↓", MOVE_LEFT: "Mouse ←", MOVE_RIGHT: "Mouse →" }[parts[1]] || parts[1] || "Mouse";
   }
   if (parts[0] === "&msc") {
     return { SCRL_UP: "Scr↑", SCRL_DOWN: "Scr↓", SCRL_LEFT: "Scr←", SCRL_RIGHT: "Scr→" }[parts[1]] || parts[1] || "Scr";

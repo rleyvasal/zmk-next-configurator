@@ -771,17 +771,6 @@ main.workspace {
   line-height: 1.2;
 }
 
-.session > .color-legend.compact {
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0.12rem 0.28rem;
-  padding-top: 0.3rem;
-  font-size: 0.6rem;
-}
-
-.session > .color-legend.compact .lg-extra {
-  display: none;
-}
-
 .session.live {
   box-shadow: inset 3px 0 0 var(--ok);
 }
@@ -1855,7 +1844,7 @@ button.danger {
 
 .color-legend .lg-sel {
   background: var(--select-fill);
-  border: 1.5px solid var(--select);
+  border: 1.5px dashed var(--select);
 }
 
 .color-legend .lg-hold {
@@ -1875,22 +1864,12 @@ button.danger {
 
 .color-legend .lg-combo {
   background: var(--combo-fill);
-  border: 1.5px dashed var(--combo-color);
+  border: 1.5px solid var(--combo-color);
 }
 
 .color-legend .lg-other {
   background: var(--other-fill);
   border: 1.5px solid var(--other);
-}
-
-.color-legend .lg-open {
-  background: var(--layerhold-fill);
-  border: 1.5px solid var(--layerhold);
-}
-
-.color-legend .lg-prot {
-  background: var(--bg-key);
-  border: 1.5px dashed var(--danger);
 }
 
 .layers {
