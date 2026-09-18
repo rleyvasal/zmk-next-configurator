@@ -1931,20 +1931,15 @@ function renderKeyboard() {
       const dotR = 5.5;
       const dotCx = k.x + dotR + 3;
       const dotCy = k.y + dotR + 3;
-      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      ring.setAttribute("class", "override-dot-ring");
-      ring.setAttribute("cx", dotCx);
-      ring.setAttribute("cy", dotCy);
-      ring.setAttribute("r", String(dotR + 2));
       const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       dot.setAttribute("class", "override-dot");
       dot.setAttribute("cx", dotCx);
       dot.setAttribute("cy", dotCy);
       dot.setAttribute("r", String(dotR));
-      g.append(ring, dot);
+      g.append(dot);
     }
 
-    if (edits.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+    if (edits.has(i) && !overrides.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
       const dotR = 5.5;
       const dotCx = k.x + k.w - dotR - 3;
       const dotCy = k.y + k.h - dotR - 3;
@@ -5813,6 +5808,20 @@ async function restoreRuntimeStock() {
 }
 
 async function restoreRuntimeStockNow() {
+  setRestoreProgress(true);
+  try {
+    return await restoreRuntimeStockNowImpl();
+  } finally {
+    setRestoreProgress(false);
+  }
+}
+
+function setRestoreProgress(active) {
+  const overlay = $("restore-progress");
+  if (overlay) overlay.hidden = !active;
+}
+
+async function restoreRuntimeStockNowImpl() {
   setStatus("Saving stock Running Configuration generation…");
   const expectedActiveGeneration =
     state.runtime.status?.activeGeneration ?? state.runtime.snapshot?.generation ?? 0;
@@ -5996,8 +6005,11 @@ function renderRuntimeBanner() {
   const debug = $("runtime-banner-debug");
   if (!label || !summary || !restore || !debug) return;
   const on = !!state.runtime;
+  const counts = runtimeOverlayCounts(state.runtime?.snapshot || {});
+  const hasOverwrittenKeys = counts.keyOverrides || counts.comboKeys;
   label.hidden = !on;
-  summary.textContent = on ? `· ${runtimeOverlaySummary()}` : "";
+  summary.textContent = on ? runtimeOverlaySummary() : "";
+  summary.classList.toggle("overwritten", Boolean(on && hasOverwrittenKeys));
   restore.hidden = !on;
   restore.disabled = !state.studio;
   debug.hidden = !on;

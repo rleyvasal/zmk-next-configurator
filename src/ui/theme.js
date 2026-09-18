@@ -25,10 +25,10 @@ export const THEME = {
   accentDim: "#0891B2",
   accentInk: "#082F49",
 
-  // Live-override marker (the corner dot on keys that differ from firmware) —
-  // violet, deliberately unused elsewhere in this palette so it never reads
-  // as the cyan selection ring or any behavior kind's color.
-  override: "#A78BFA",
+  // Live-override marker (the corner dot on keys that differ from firmware).
+  // Match the runtime-banner summary so the count and the affected keys read
+  // as one status.
+  override: "#FF746C",
 
   // Hold-tap / home-row mods — vivid blue (&hml, &hmr, ht_*)
   holdTap: "#3B82F6",

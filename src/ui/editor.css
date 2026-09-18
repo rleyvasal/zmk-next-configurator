@@ -13,7 +13,7 @@
   --accent-ink: #082f49;
   --select: #22d3ee;
   --select-fill: #155e75;
-  --override: #a78bfa;
+  --override: #ff746c;
   --danger: #fbbf24;
   --danger-bg: #422006;
   --danger-ink: #fde68a;
@@ -629,6 +629,21 @@ button:disabled {
 .runtime-banner-summary {
   color: var(--ink);
   font-weight: 600;
+}
+
+.runtime-banner-summary.overwritten {
+  color: var(--override);
+}
+
+.runtime-banner-summary.overwritten::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--override);
+  vertical-align: 0.05em;
 }
 
 .kb-batt {
@@ -2255,11 +2270,6 @@ body.hide-combo-pairs .combo-pair-badge-label {
   display: none;
 }
 
-.override-dot-ring {
-  fill: var(--bg-raise);
-  pointer-events: none;
-}
-
 .override-dot {
   fill: var(--override);
   pointer-events: none;
@@ -2275,9 +2285,51 @@ body.hide-combo-pairs .combo-pair-badge-label {
   pointer-events: none;
 }
 
-body.hide-colors .override-dot-ring,
 body.hide-colors .override-dot {
   display: none;
+}
+
+.restore-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+
+.restore-progress-overlay[hidden] {
+  display: none;
+}
+
+.restore-progress-panel {
+  display: grid;
+  justify-items: center;
+  gap: 0.8rem;
+  padding: 1.5rem 1.8rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-raise);
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 0 16px 40px color-mix(in srgb, #000 45%, transparent);
+}
+
+.restore-progress-spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 0.22rem solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: restore-progress-spin 0.9s linear infinite;
+}
+
+@keyframes restore-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .restore-progress-spinner { animation: none; }
 }
 
 body.hide-colors .key-hit.kind-macro,
