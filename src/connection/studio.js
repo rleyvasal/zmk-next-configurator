@@ -46,6 +46,7 @@ const EOF = 0xad;
 const LOG_PREFIX = 0x4c; // 'L' — printk muxed onto the Studio CDC
 const BAT_PREFIX = 0x42; // 'B' — battery snapshot, independent of Enable log
 const CTL_PREFIX = 0x43; // 'C' — USB log on/off (host → device)
+const DIAG_DUMP_PREFIX = 0x44; // 'D' — request retained diagnostic journal
 
 export function frameBytes(payload) {
   const out = [SOF];
@@ -397,6 +398,10 @@ export class StudioClient {
   async setUsbLog(on) {
     const payload = Uint8Array.from([CTL_PREFIX, on ? 0x31 : 0x30]);
     await this.writer.write(frameBytes(payload));
+  }
+
+  async requestDiagnosticDump() {
+    await this.writer.write(frameBytes(Uint8Array.from([DIAG_DUMP_PREFIX, 0x31])));
   }
 
   async handshake() {

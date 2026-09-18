@@ -5337,12 +5337,14 @@ function setKbLogStatus(text) {
   if (el) el.textContent = text;
 }
 
-function showKbLogButtons({ enable = false, disable = false, clear = false } = {}) {
+function showKbLogButtons({ enable = false, disable = false, retained = false, clear = false } = {}) {
   const onBtn = $("kb-log-on");
   const offBtn = $("kb-log-off");
+  const retainedBtn = $("kb-log-retained");
   const clearBtn = $("kb-log-clear");
   if (onBtn) onBtn.hidden = !enable;
   if (offBtn) offBtn.hidden = !disable;
+  if (retainedBtn) retainedBtn.hidden = !retained;
   if (clearBtn) clearBtn.hidden = !clear;
 }
 
@@ -5359,7 +5361,7 @@ async function attachKeyboardLog(client) {
   };
   client.onBattery = (line) => setKbBattery(line);
   setKbLogStatus("USB log off. Enable to stream printk. Remap still works.");
-  showKbLogButtons({ enable: true, disable: false, clear: true });
+  showKbLogButtons({ enable: true, disable: false, retained: true, clear: true });
   setKbLogLive(false);
 }
 
@@ -7328,7 +7330,7 @@ function boot() {
       client.setUsbLog(true).then(() => {
         state.kbLogOn = true;
         setKbLogStatus("USB log on. Disable if typing gets jumpy.");
-        showKbLogButtons({ enable: false, disable: true, clear: true });
+        showKbLogButtons({ enable: false, disable: true, retained: true, clear: true });
         setKbLogLive(true);
         setKbLogOpen(true);
       }).catch((err) => setStatus(err.message));
@@ -7339,8 +7341,19 @@ function boot() {
       client.setUsbLog(false).then(() => {
         state.kbLogOn = false;
         setKbLogStatus("USB log off. Remap still works.");
-        showKbLogButtons({ enable: true, disable: false, clear: true });
+        showKbLogButtons({ enable: true, disable: false, retained: true, clear: true });
         setKbLogLive(false);
+      }).catch((err) => setStatus(err.message));
+    });
+    $("kb-log-retained")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.requestDiagnosticDump) return;
+      client.requestDiagnosticDump().then(() => {
+        state.kbLogOn = true;
+        setKbLogStatus("Loading retained diagnostic log…");
+        showKbLogButtons({ enable: false, disable: true, retained: true, clear: true });
+        setKbLogLive(true);
+        setKbLogOpen(true);
       }).catch((err) => setStatus(err.message));
     });
     $("load-github")?.addEventListener("click", () => {
