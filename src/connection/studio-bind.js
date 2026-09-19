@@ -530,17 +530,15 @@ function encodeArg(token, kinds, layers) {
   throw new Error(`Cannot encode ${token}`);
 }
 
-export function bindingToCells(text, behaviors, layers) {
+export function bindingToCells(text, behaviors, layers, { allowMouseAxisWithoutMetadata = false } = {}) {
   const parsed = parseBindingText(text);
   if (!parsed) return { ok: false, reason: "not a binding" };
   const behavior = findBehavior(behaviors, parsed.name);
   if (!behavior) return { ok: false, reason: `behavior &${parsed.name} is not in this firmware` };
-  // ZMK's built-in input-two-axis driver has no parameter metadata. Studio
-  // therefore rejects every non-zero binding for it during validation, even
-  // though the behavior is listed and the numeric value is easy to encode.
-  // Treat that as a flash-only binding instead of reporting a false live
-  // success and leaving the user with an apparently empty key.
-  if (isFlashOnlyMouseAxis(parsed, behavior)) {
+  // ZMK's built-in input-two-axis driver has no parameter metadata, so the
+  // ordinary Studio key-binding API rejects non-zero parameters. Runtime
+  // Config writes the compiled behavior directly and can carry those values.
+  if (isFlashOnlyMouseAxis(parsed, behavior) && !allowMouseAxisWithoutMetadata) {
     return { ok: false, reason: `behavior &${parsed.name} has no Studio parameter metadata; download and flash this change` };
   }
   const p1 = paramKinds(behavior.param1);
