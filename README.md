@@ -23,8 +23,8 @@ Live editing needs ZMK Next firmware. An existing ZMK config repo needs two
 edits: point the `zmk` project in `config/west.yml` at a ZMK Next release tag,
 and add `snippet: zmk-next` to the USB/central build in `build.yaml`. The
 [ZMK Next quick-start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md)
-has copy-and-paste examples. Use the configurator release with the same tag as
-the firmware.
+has copy-and-paste examples. Any configurator release works with firmware of
+the same major and minor version (v0.2.x with v0.2.x).
 
 ## Download and run
 
