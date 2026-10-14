@@ -189,7 +189,7 @@ function importMacro(draft, macro, capabilities, encodeOpts) {
     const merged = mergeObject(draft, {
       type: "macro",
       steps,
-    }, capabilities, encodeOpts);
+    }, capabilities, encodeOpts, macro.runtimeObjectId);
     const imported = {
       kind: "macro",
       id: macro.id,
@@ -212,7 +212,7 @@ function importHoldTaps(draft, behavior, layers, capabilities, encodeOpts) {
     skipped.push({ kind: "hold-tap", id: behavior.id, reason: "this firmware does not advertise runtime hold-taps" });
     return { draft, imported, skipped, rewrites };
   }
-  if (behavior.triggerPositions?.length || behavior.holdOnRelease) {
+  if (behavior.triggerPositions?.length) {
     skipped.push({
       kind: "hold-tap",
       id: behavior.id,
@@ -404,7 +404,7 @@ function importCombo(draft, combo, capabilities, encodeOpts, fileToRuntime) {
       requirePriorIdleMs: 0,
       layers: combo.layers,
       outputBinding,
-    }, capabilities, encodeOpts);
+    }, capabilities, encodeOpts, combo.runtimeComboId);
     return {
       draft: merged.draft,
       imported: {
@@ -420,21 +420,27 @@ function importCombo(draft, combo, capabilities, encodeOpts, fileToRuntime) {
   }
 }
 
-function mergeObject(draft, fields, capabilities, encodeOpts) {
-  const trialId = nextRuntimeObjectId(draft);
+function mergeObject(draft, fields, capabilities, encodeOpts, rememberedId = null) {
+  const wanted = Number(rememberedId);
+  const updating = Number.isInteger(wanted) && draft.runtimeObjects.some((object) => object.id === wanted);
+  const trialId = updating ? wanted : nextRuntimeObjectId(draft);
   const trial = upsertRuntimeObject(draft, { ...fields, id: trialId }, capabilities, encodeOpts);
   const created = trial.runtimeObjects.find((object) => object.id === trialId);
   if (!created) throw new RuntimeDraftError("failed to stage imported runtime object");
+  if (updating) return { draft: trial, object: created, reused: true };
   const existing = draft.runtimeObjects.find((object) => sameObject(object, created));
   if (existing) return { draft, object: existing, reused: true };
   return { draft: trial, object: created, reused: false };
 }
 
-function mergeCombo(draft, fields, capabilities, encodeOpts) {
-  const trialId = nextRuntimeComboId(draft);
+function mergeCombo(draft, fields, capabilities, encodeOpts, rememberedId = null) {
+  const wanted = Number(rememberedId);
+  const updating = Number.isInteger(wanted) && draft.combos.some((combo) => combo.id === wanted);
+  const trialId = updating ? wanted : nextRuntimeComboId(draft);
   const trial = upsertRuntimeCombo(draft, { ...fields, id: trialId }, capabilities, encodeOpts);
   const created = trial.combos.find((combo) => combo.id === trialId);
   if (!created) throw new RuntimeDraftError("failed to stage imported runtime combo");
+  if (updating) return { draft: trial, combo: created, reused: true };
   const existing = draft.combos.find((combo) => sameCombo(combo, created));
   if (existing) return { draft, combo: existing, reused: true };
   return { draft: trial, combo: created, reused: false };

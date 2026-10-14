@@ -484,7 +484,7 @@ function paramKinds(descs) {
   return kinds;
 }
 
-function layerNameKey(raw) {
+export function layerNameKey(raw) {
   return String(raw || "")
     .replace(/_layer$/i, "")
     .replace(/\s+/g, "")
@@ -626,6 +626,55 @@ export function isPlaceholderBinding(text) {
   return false;
 }
 
+export function isVacantBinding(text) {
+  const t = String(text || "").trim();
+  return !t || t === "&none" || isPlaceholderBinding(t);
+}
+
+/** Studio get_keymap can return an empty cell while the compiled .keymap still
+ *  has a real binding (decode miss, or overlay-none read before stock activate). */
+export function preferFileBindingIfVacant(decodedText, fileText) {
+  if (!isVacantBinding(decodedText)) return decodedText;
+  if (!isVacantBinding(fileText)) return fileText;
+  return decodedText || "&none";
+}
+
+function bindingTextAt(layer, index) {
+  const binding = layer?.bindings?.[index];
+  if (binding == null) return "";
+  return String(binding.text ?? binding ?? "").trim();
+}
+
+/** Match a compiled-file layer by name (BASE vs base_layer) then by index. */
+export function fileBindingAt(fileLayers, layerId, index, fallbackIndex = -1) {
+  if (!fileLayers?.length || index == null || index < 0) return "";
+  const want = layerNameKey(layerId);
+  const named = want ? fileLayers.find((layer) => layerNameKey(layer.id || layer.name) === want) : null;
+  const fromName = bindingTextAt(named, index);
+  if (!isVacantBinding(fromName)) return fromName;
+  if (fallbackIndex >= 0) {
+    const fromIndex = bindingTextAt(fileLayers[fallbackIndex], index);
+    if (!isVacantBinding(fromIndex)) return fromIndex;
+  }
+  return fromName || "";
+}
+
+export function fillVacantBindingsFromFile(editorLayers, fileLayers, skip) {
+  let filled = 0;
+  (editorLayers || []).forEach((layer, li) => {
+    (layer.bindings || []).forEach((binding, i) => {
+      if (skip?.(layer, li, binding, i)) return;
+      const fileText = fileBindingAt(fileLayers, layer.id || layer.name, i, li);
+      const next = preferFileBindingIfVacant(binding.text, fileText);
+      if (next !== binding.text) {
+        binding.text = next;
+        filled++;
+      }
+    });
+  });
+  return filled;
+}
+
 function dtsNameFromBehavior(behavior) {
   const named = namedDts(behavior);
   if (named) return named;
@@ -708,10 +757,19 @@ export function cellsToBinding(cell, behaviors, layers) {
   // reclassifying a layer-tap as a mouse click because its layer number
   // happens to match a button bit is never correct, regardless of the
   // numeric coincidence.
-  const declaredLayer = paramKinds(behavior.param1).layer;
+  const declaredParam1 = paramKinds(behavior.param1);
+  const declaredLayer = declaredParam1.layer;
   const asMove = !declaredLayer && nameFromTable(cell.param1, MOUSE_MOVE);
   const asScroll = !declaredLayer && nameFromTable(cell.param1, MOUSE_SCROLL);
-  const asBtn = !declaredLayer && nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
+  // Small Bluetooth command values overlap mouse-button bit flags exactly:
+  // BT_NXT=1/LCLK, BT_PRV=2/RCLK, BT_CLR_ALL=4/MCLK. Only infer a mouse
+  // button when the resolved behavior has no declared param1 semantics.
+  const asBtn =
+    !declaredLayer &&
+    !declaredParam1.hid &&
+    !declaredParam1.constants.size &&
+    !declaredParam1.nil &&
+    nameFromTable(cell.param1, MOUSE_BTN, ["LCLK", "RCLK", "MCLK", "MB4", "MB5"]);
   if (asMove && name !== "mmv") {
     const mmv = findBehavior(behaviors, "mmv");
     if (mmv) {
@@ -753,6 +811,7 @@ export function cellsToBinding(cell, behaviors, layers) {
     const cmd = Object.entries(BT_CMD).find(([, v]) => v === Number(cell.param1));
     if (cmd) args[0] = cmd[0];
     if (args[0] === "BT_SEL" && args[1] == null) args[1] = String(Number(cell.param2) || 0);
+    else if (args[0] !== "BT_SEL") args.length = Math.min(args.length, 1);
   }
   if (name === "mmv" || name === "msc" || name === "mkp") {
     const table = name === "mmv" ? MOUSE_MOVE : name === "msc" ? MOUSE_SCROLL : MOUSE_BTN;

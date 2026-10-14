@@ -19,6 +19,7 @@ import {
   parseRuntimeObjectId,
   comboLayerMask,
   comboLayersFromMask,
+  patchDraftKeymapOverrides,
   runtimeComboActiveOnLayer,
   replaceDraftKeymapOverrides,
   runtimeObjectReferences,
@@ -217,6 +218,33 @@ if (
   matchingDraft.keymapOverrides[0].keyPosition !== 0
 ) {
   throw new Error(`matching compiled keys must not become overrides ${JSON.stringify(matchingDraft.keymapOverrides)}`);
+}
+const patchedKey = patchDraftKeymapOverrides({
+  snapshot: { ...snapshot, keymapOverrides: [] },
+  capabilities: draftCapabilities,
+  changes: [{ layerId: 0, selectedIndex: 1, text: "&kp E", compiledText: "&kp P" }],
+  behaviors: draftBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (
+  patchedKey.keymapOverrides.length !== 1 ||
+  patchedKey.keymapOverrides[0].keyPosition !== 0 ||
+  bindingTextFromAction(patchedKey.keymapOverrides[0].action, {
+    behaviors: draftBehaviors,
+    studioLayers: draftStudioLayers,
+  }) !== "&kp E"
+) {
+  throw new Error(`live key patch ${JSON.stringify(patchedKey.keymapOverrides)}`);
+}
+const revertedKey = patchDraftKeymapOverrides({
+  snapshot: patchedKey,
+  capabilities: draftCapabilities,
+  changes: [{ layerId: 0, selectedIndex: 1, text: "&kp P", compiledText: "&kp P" }],
+  behaviors: draftBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (revertedKey.keymapOverrides.length !== 0) {
+  throw new Error(`live key revert must remove its override ${JSON.stringify(revertedKey.keymapOverrides)}`);
 }
 let draftRejected = false;
 try {

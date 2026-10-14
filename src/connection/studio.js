@@ -31,6 +31,7 @@ import {
   encodeRuntimeSnapshot,
   runtimeConfigErrorMessage,
 } from "./runtime-config.js";
+import { waitForRuntimeStatus } from "./runtime-activation.js";
 
 const Fs = FIELDS.studio;
 const Fc = FIELDS.core;
@@ -166,6 +167,28 @@ function parseKeymap(fields) {
   };
 }
 
+function parsePhysicalKey(fields) {
+  return {
+    w: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.width)),
+    h: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.height)),
+    x: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.x)),
+    y: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.y)),
+    r: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.r)),
+    rx: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.rx)),
+    ry: unzigzag32(fieldU32(fields, Fk.KeyPhysicalAttrs.ry)),
+  };
+}
+
+function parsePhysicalLayouts(fields) {
+  return {
+    activeLayoutIndex: fieldU32(fields, Fk.PhysicalLayouts.active_layout_index),
+    layouts: fieldMsgs(fields, Fk.PhysicalLayouts.layouts).map((layout) => ({
+      name: fieldStr(layout, Fk.PhysicalLayout.name),
+      keys: fieldMsgs(layout, Fk.PhysicalLayout.keys).map(parsePhysicalKey),
+    })),
+  };
+}
+
 function parseResponse(bytes) {
   const top = decodeFields(bytes);
   const rr = fieldMsgs(top, Fs.Response.request_response)[0];
@@ -196,6 +219,8 @@ function parseResponse(bytes) {
   if (keymap) {
     const km = fieldMsgs(keymap, Fk.Response.get_keymap)[0];
     if (km) out.keymap = parseKeymap(km);
+    const physicalLayouts = fieldMsgs(keymap, Fk.Response.get_physical_layouts)[0];
+    if (physicalLayouts) out.physicalLayouts = parsePhysicalLayouts(physicalLayouts);
     // SetLayerBindingResponse is the plain enum SET_LAYER_BINDING_RESP_* on
     // the wire (a varint), in both zmk-next-messages and real upstream
     // zmk-studio-messages — never a submessage.
@@ -269,6 +294,8 @@ export class StudioClient {
     this.deviceName = "";
     this.behaviors = [];
     this.layers = [];
+    this.physicalLayouts = [];
+    this.activePhysicalLayout = null;
     this.lastRuntimeUpdateId = 0;
     this._loop = this.readLoop();
   }
@@ -357,7 +384,7 @@ export class StudioClient {
       1500,
       "This USB serial port didn't answer the Studio RPC handshake. If the keyboard exposes more than one serial port, reconnect and pick a different one."
     );
-    this.deviceName = info.deviceInfo?.name || "Totem";
+    this.deviceName = info.deviceInfo?.name || "Keyboard";
     const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
     if (lock.lockState === 0) {
       throw new Error("Studio is locked. This image should be unlocked; try unplugging USB and reconnecting.");
@@ -382,7 +409,27 @@ export class StudioClient {
     this.layers = km.keymap?.layers || [];
     this.availableLayers = km.keymap?.availableLayers ?? 0;
     this.inferredBehaviors = rememberStudioBehaviors(this.behaviors, this.layers);
+    try {
+      await this.getPhysicalLayouts();
+    } catch (error) {
+      // Older Studio firmware may not expose geometry. The editor can still
+      // use a profile loaded from the user's config repository.
+      console.debug("Studio physical layout discovery unavailable", error);
+    }
     return this.layers;
+  }
+
+  async getPhysicalLayouts() {
+    const resp = await this.call(
+      (id) => encodeKeymap(id, Fk.Request.get_physical_layouts),
+      3000,
+      "The keyboard did not return its physical layout."
+    );
+    const result = resp.physicalLayouts;
+    this.physicalLayouts = result?.layouts || [];
+    const active = Number(result?.activeLayoutIndex || 0);
+    this.activePhysicalLayout = this.physicalLayouts[active] || this.physicalLayouts[0] || null;
+    return this.physicalLayouts;
   }
 
   async addLayer() {
@@ -486,6 +533,14 @@ export class StudioClient {
   async save() {
     const resp = await this.call((id) => encodeKeymap(id, Fk.Request.save_changes));
     if (resp.saveErr) throw new Error(`Studio save failed (${resp.saveErr})`);
+    return true;
+  }
+
+  async resetKeymapSettings() {
+    const resp = await this.call((id) => encodeCore(id, Fc.Request.reset_settings), 10000);
+    if (!resp.resetSettings) {
+      throw new Error("Keyboard did not restore the compiled Studio keymap");
+    }
     return true;
   }
 
@@ -692,16 +747,26 @@ export class StudioClient {
         await this.abortRuntimeUpdate(updateId);
       }
       if (!retried && error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
-        await this.abortAnyRuntimeUpdate();
-        return this.applyRuntimeSnapshot(snapshot, {
-          expectedActiveGeneration,
-          retried: true,
-          onProgress,
+        // Firmware returns busy while a persisted generation is waiting for
+        // idle. Aborting staging does not clear that. Wait, then retry with
+        // the generation that is actually active.
+        progress("Waiting for the keyboard to go idle. Lift all keys…");
+        const waited = await waitForRuntimeStatus(() => this.getRuntimeConfigStatus({ timeoutMs: 2000 }), {
+          wantedGeneration: 0,
+          timeoutMs: 60000,
+          onWaiting: () => progress("Waiting for the keyboard to go idle. Lift all keys…"),
         });
+        if (waited.ok) {
+          return this.applyRuntimeSnapshot(snapshot, {
+            expectedActiveGeneration: waited.status?.activeGeneration ?? 0,
+            retried: true,
+            onProgress,
+          });
+        }
       }
       if (error.runtimeConfigCode === RUNTIME_CONFIG_ERROR.UPDATE_IN_PROGRESS) {
         throw new Error(
-          "A Runtime Config Apply is already in progress. Release all keys if a save is waiting for idle. Otherwise Disconnect, unplug USB to clear the stuck staging, plug back in, then Apply once and wait for “Saved generation”."
+          "A Runtime Config save is waiting for the keyboard to go idle. Lift all keys, then try again."
         );
       }
       if (timedOut) {

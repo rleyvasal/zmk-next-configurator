@@ -17,7 +17,34 @@ zmk-next-configurator/
 └── tests/
 ```
 
-## Run
+## Prepare your keyboard
+
+Live editing needs ZMK Next firmware. An existing ZMK config repo needs two
+edits: point the `zmk` project in `config/west.yml` at a ZMK Next release tag,
+and add `snippet: zmk-next` to the USB/central build in `build.yaml`. The
+[ZMK Next quick-start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md)
+has copy-and-paste examples. Use the configurator release with the same tag as
+the firmware.
+
+## Download and run
+
+Download the latest `.zip` or `.tar.gz` from
+[GitHub Releases](https://github.com/rleyvasal/zmk-next-configurator/releases),
+extract it, and launch the file for your platform:
+
+- macOS: double-click `start.command`
+- Linux: run `./start.sh`
+- Windows: double-click `start.bat`
+
+Python 3 is the only requirement. The launcher starts a local server bound to
+`127.0.0.1` and opens the configurator in your browser. Nothing is uploaded to
+a hosted ZMK Next service, and no VPS or installation is required. Use a
+Chromium-based browser for the Web Serial **Connect** feature.
+
+macOS may quarantine an unsigned downloaded script. If double-clicking is
+blocked, Control-click `start.command`, choose **Open**, and confirm once.
+
+## Run from source
 
 From this repo:
 
@@ -48,10 +75,8 @@ previous valid generation as on-device recovery fallback.
 When Runtime Config is available, **Runtime objects** edits macros, combos, hold-taps,
 mod-morphs, and tap-dances in a local draft. Unsupported types stay hidden. Assign an
 object to many keys with `&rt <id>`. **Import from keymap** copies compatible `.keymap`
-macros, all-layer combos, mod-morphs, tap-dances, and simple hold-taps into that draft
-and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers and
-layer-filtered combos stay firmware-compiled so their timing and layer rules cannot
-silently change.
+macros, combos (including layer masks), mod-morphs, tap-dances, and simple hold-taps into that draft
+and rewrites their keys to `&rt <id>`. Homerow hold-taps with positional triggers stay firmware-compiled so their timing cannot silently change. A combo or Apply is live only after the firmware activates that generation (lift keys if the UI says waiting for idle).
 
 The draft shows firmware resource use before Apply. Firmware validation errors are
 mapped onto the object or key that caused them. **Export snapshot** downloads a portable
@@ -98,6 +123,7 @@ node tests/test_runtime_config.mjs
 node tests/test_runtime_import.mjs
 node tests/test_runtime_document.mjs
 node tests/test_runtime_display.mjs
+node tests/test_runtime_activation.mjs
 ```
 
 `src/connection/fields.generated.js` holds the protobuf field/enum numbers used

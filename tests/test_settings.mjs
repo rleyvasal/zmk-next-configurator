@@ -80,7 +80,7 @@ if (clamped.os !== "mac" || clamped.emptyBinding !== "&none" || clamped.showColo
 }
 
 const defs = defaultSettings("Linux");
-if (defs.os !== "linux" || defs.tappingTerm !== 280 || defs.comboTimeout !== 50) throw new Error("linux defaults");
+if (defs.os !== "linux" || defs.tappingTerm !== 280 || defs.comboTimeout !== 200) throw new Error("linux defaults");
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const profile = normalizeProfile(JSON.parse(readFileSync(join(root, "layouts/totem.json"), "utf8")));

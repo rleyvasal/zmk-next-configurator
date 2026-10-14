@@ -172,6 +172,41 @@ function parseAngleList(src) {
     .filter(Boolean);
 }
 
+function parseIntegerDefines(src) {
+  const raw = new Map();
+  for (const match of String(src || "").matchAll(
+    /^[ \t]*#define[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+(0[xX][0-9A-Fa-f]+|\d+|[A-Za-z_][A-Za-z0-9_]*)\b/gm
+  )) {
+    raw.set(match[1], match[2]);
+  }
+  const resolved = new Map();
+  const resolve = (name, seen = new Set()) => {
+    if (resolved.has(name)) return resolved.get(name);
+    if (seen.has(name) || !raw.has(name)) return null;
+    const token = raw.get(name);
+    const value = /^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(token)
+      ? Number(token)
+      : resolve(token, new Set([...seen, name]));
+    if (Number.isInteger(value) && value >= 0) resolved.set(name, value);
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  };
+  for (const name of raw.keys()) resolve(name);
+  return resolved;
+}
+
+function parseComboLayers(layerMatch, defines) {
+  if (!layerMatch) return "all";
+  const layers = [];
+  for (const token of parseAngleList(`<${layerMatch[1]}>`)) {
+    const value = /^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(token)
+      ? Number(token)
+      : defines.get(token);
+    if (!Number.isInteger(value) || value < 0) return [];
+    layers.push(value);
+  }
+  return layers;
+}
+
 export function parseCombos(src) {
   const marker = src.indexOf('compatible = "zmk,combos"');
   if (marker < 0) return { combos: [], comboInsertAt: -1 };
@@ -180,6 +215,7 @@ export function parseCombos(src) {
   if (blockOpen < 0 || blockClose < 0) return { combos: [], comboInsertAt: -1 };
 
   const combos = [];
+  const integerDefines = parseIntegerDefines(src);
   let i = marker;
   let ifdef = 0;
   while (i < blockClose) {
@@ -220,7 +256,7 @@ export function parseCombos(src) {
         id: name,
         positions,
         binding: bindToks[0]?.text || (bindMatch ? bindMatch[1].trim() : ""),
-        layers: layerMatch ? parseAngleList(`<${layerMatch[1]}>`).map(Number) : "all",
+        layers: parseComboLayers(layerMatch, integerDefines),
         timeout: timeMatch ? Number(timeMatch[1]) : 50,
         slowRelease: /slow-release/.test(body),
         guarded: ifdef > 0,
@@ -1033,9 +1069,9 @@ export const PROTECTED = {
   1: { why: "Q+W Escape combo (base layer only)", layers: [0] },
   8: { why: "U+Y ñ combo (base layer only)", layers: [0] },
   9: { why: "U+Y ñ combo (base layer only)", layers: [0] },
-  20: { why: "[+Z reset / [+X host-log dump (every layer)", layers: "all" },
-  21: { why: "[+Z reset (every layer)", layers: "all" },
-  22: { why: "[+X host-log dump (every layer)", layers: "all" },
+  20: { why: "[+Z reset / [+X host-log dump (base layer only)", layers: [0] },
+  21: { why: "[+Z reset (base layer only)", layers: [0] },
+  22: { why: "[+X host-log dump (base layer only)", layers: [0] },
   26: { why: "N+M dictation combo (base layer only)", layers: [0] },
   27: { why: "N+M dictation combo (base layer only)", layers: [0] },
 };

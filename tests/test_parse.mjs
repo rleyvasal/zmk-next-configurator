@@ -57,6 +57,8 @@ if (parsed.layers[0].start == null || !keymap.slice(parsed.layers[0].start, pars
 
 const base = parsed.layers[0].bindings.map((b) => b.text);
 if (base[0] !== "&kp Q") throw new Error(`P0 ${base[0]}`);
+if (base[2] !== "&kp F") throw new Error(`P2 ${base[2]}`);
+if (base[3] !== "&kp P") throw new Error(`P3 ${base[3]}`);
 if (base[10] !== "&hml LGUI A") throw new Error(`P10 ${base[10]}`);
 if (base[35] !== "&lt ADJ ENTER") throw new Error(`P35 ${base[35]}`);
 if (base[18] !== "&hmr RALT I") throw new Error(`P18 ${base[18]}`);
@@ -106,16 +108,18 @@ const esc = parsed.combos.find((c) => c.id === "combo_esc");
 if (!esc || esc.positions.join(",") !== "0,1" || esc.binding !== "&kp ESC") throw new Error(JSON.stringify(esc));
 if (esc.layers[0] !== 0) throw new Error("esc layers");
 const reset = parsed.combos.find((c) => c.id === "combo_reset_left");
-if (reset.layers !== "all") throw new Error("reset should be all layers");
+if (reset.layers?.join(",") !== "0") throw new Error(`reset should be BASE only ${JSON.stringify(reset)}`);
+const logCombo = parsed.combos.find((c) => c.id === "combo_host_log_dump");
+if (logCombo.layers?.join(",") !== "0") throw new Error(`log should be BASE only ${JSON.stringify(logCombo)}`);
 const stu = parsed.combos.find((c) => c.id === "combo_studio_unlock");
 if (!stu?.guarded) throw new Error("studio unlock should be ifdef-guarded");
+if (stu.layers?.join(",") !== "0") throw new Error(`studio unlock should be BASE only ${JSON.stringify(stu)}`);
 
 if (protectionFor(0, 0, parsed.combos) == null) throw new Error("Q+W should warn on base");
 if (protectionFor(1, 2, parsed.combos) != null) throw new Error("W should not be a nav combo");
-if (!String(protectionFor(0, 2, parsed.combos) || "").includes("studio")) {
-  throw new Error("P0 on nav is studio unlock");
-}
-if (protectionFor(20, 2, parsed.combos) == null) throw new Error("[+Z should warn on every layer");
+if (protectionFor(0, 2, parsed.combos) != null) throw new Error("studio unlock must not protect P0 on NAV");
+if (protectionFor(20, 0, parsed.combos) == null) throw new Error("[+Z should warn on BASE");
+if (protectionFor(20, 2, parsed.combos) != null) throw new Error("[+Z must not warn on NAV");
 
 if (shortLayerHint("LAYER_5") !== "L5") throw new Error(`short ${shortLayerHint("LAYER_5")}`);
 if (bindingHoldHint("&lt LAYER_5 A") !== "L5") throw new Error(`lt hint ${bindingHoldHint("&lt LAYER_5 A")}`);

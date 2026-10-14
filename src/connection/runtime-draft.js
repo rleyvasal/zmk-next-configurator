@@ -6,6 +6,7 @@ import {
   decodeRuntimeSnapshot,
   encodeRuntimeSnapshot,
   runtimeObjectAction,
+  suppressCompiledAction,
 } from "./runtime-config.js";
 
 export class RuntimeDraftError extends Error {
@@ -45,6 +46,7 @@ const FEATURE = {
   MACROS: 5,
   HOLD_TAPS: 6,
   TAP_DANCES: 7,
+  COMBO_SUPPRESS_COMPILED: 14,
 };
 
 const OBJECT_TYPE_FEATURE = {
@@ -93,6 +95,10 @@ export function capabilitySupportsObjectType(capabilities, type) {
 
 export function capabilitySupportsCombos(capabilities) {
   return capabilityHas(capabilities, FEATURE.COMBOS);
+}
+
+export function capabilitySupportsComboSuppression(capabilities) {
+  return capabilitySupportsCombos(capabilities) && capabilityHas(capabilities, FEATURE.COMBO_SUPPRESS_COMPILED);
 }
 
 export function supportedRuntimeEditorTypes(capabilities) {
@@ -322,6 +328,7 @@ export function runtimeObjectReferences(snapshot, objectId, capabilities) {
 
 export function bindingTextFromAction(action, { behaviors, studioLayers } = {}) {
   if (!action) return "";
+  if (action.suppressCompiled) return "suppress compiled combo";
   if (action.runtimeObjectId) return runtimeBindingText(action.runtimeObjectId);
   if (action.compiledBehavior) {
     const decoded = cellsToBinding(
@@ -439,6 +446,12 @@ function stockPositions(capabilities, keyCount) {
 }
 
 function requireAction(action, binding, options, name) {
+  if (action?.suppressCompiled) {
+    if (!options.allowSuppressCompiled) {
+      throw new RuntimeDraftError("Suppress-compiled actions are only valid as combo output");
+    }
+    return suppressCompiledAction();
+  }
   if (action?.compiledBehavior) {
     const compiled = action.compiledBehavior;
     if (!compiled.behaviorId) throw new RuntimeDraftError(`${name} is required`);
@@ -593,6 +606,7 @@ function normalizeRuntimeCombo(combo, { behaviors, studioLayers, snapshot, capab
     behaviors,
     studioLayers,
     allowRuntimeObject: true,
+    allowSuppressCompiled: true,
     snapshot,
   }, "combo output");
   return {
@@ -630,6 +644,72 @@ export function bindingsMatchForOverlay(editorText, compiledText) {
   // an actual override, just two encodings of the same no-op binding.
   const empty = (value) => !value || /^&(none|trans)(\s+0)*$/.test(value);
   return empty(editor) && empty(compiled);
+}
+
+/**
+ * Apply a small set of live key edits to an existing Runtime Config snapshot.
+ * Returning a key to its compiled binding removes the overlay instead of
+ * consuming an override slot with a redundant action.
+ */
+export function patchDraftKeymapOverrides({
+  snapshot,
+  capabilities,
+  changes,
+  behaviors,
+  studioLayers,
+}) {
+  const draft = createRuntimeDraft(snapshot);
+  const keyCount = Number(capabilities?.selectedPositionCount);
+  if (!Number.isInteger(keyCount) || keyCount <= 0) {
+    throw new RuntimeDraftError("Runtime Config did not report a valid selected key count");
+  }
+  const selectedToStock = stockPositions(capabilities, keyCount);
+  const byKey = new Map(
+    (draft.keymapOverrides || []).map((override) => [
+      `${override.layerId}:${override.keyPosition}`,
+      override,
+    ])
+  );
+
+  for (const change of changes || []) {
+    const layerId = Number(change?.layerId);
+    const selectedIndex = Number(change?.selectedIndex);
+    if (!Number.isInteger(layerId) || layerId < 0 || layerId > 0xff) {
+      throw new RuntimeDraftError("Live key edit targets a layer that is not present in this firmware");
+    }
+    if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= keyCount) {
+      throw new RuntimeDraftError(`Live key edit targets invalid position ${selectedIndex}`);
+    }
+    const keyPosition = selectedToStock[selectedIndex];
+    const id = `${layerId}:${keyPosition}`;
+    if (
+      change.compiledText != null &&
+      bindingsMatchForOverlay(change.text, change.compiledText)
+    ) {
+      byKey.delete(id);
+      continue;
+    }
+    byKey.set(id, {
+      layerId,
+      keyPosition,
+      action: actionFromBindingText(change.text, {
+        behaviors,
+        studioLayers,
+        allowRuntimeObject: true,
+        snapshot: draft,
+      }),
+    });
+  }
+
+  const overrides = [...byKey.values()];
+  const limit = Number(capabilities?.limits?.maxKeymapOverrides);
+  if (Number.isFinite(limit) && overrides.length > limit) {
+    throw new RuntimeDraftError(
+      `Runtime Config needs ${overrides.length} keymap overrides, but this firmware reserves ${limit}`
+    );
+  }
+  draft.keymapOverrides = overrides;
+  return draft;
 }
 
 /**

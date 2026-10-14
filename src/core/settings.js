@@ -15,7 +15,7 @@ export const EMPTY_CHOICES = ["&none", "&trans"];
 
 export const SETTING_LIMITS = {
   tappingTerm: { min: 50, max: 800, fallback: 280 },
-  comboTimeout: { min: 10, max: 500, fallback: 50 },
+  comboTimeout: { min: 10, max: 500, fallback: 200 },
 };
 
 export function detectOs(platform = "") {
@@ -42,7 +42,7 @@ export function defaultSettings(platform) {
     showColors: true,
     showComboPairs: true,
     tappingTerm: 280,
-    comboTimeout: 50,
+    comboTimeout: 200,
     confirmApply: true,
   };
 }

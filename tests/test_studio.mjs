@@ -1,6 +1,6 @@
-import { encodeUint32, encodeSint32, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
-import { frameBytes, deframeAll, parseResponse } from "../src/connection/studio.js";
-import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
+import { encodeUint32, encodeSint32, encodeString, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
+import { frameBytes, deframeAll, parseResponse, StudioClient } from "../src/connection/studio.js";
+import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile, layerNameKey, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
 
 if (hidUsage("A") !== 0x070004) throw new Error(`A ${hidUsage("A").toString(16)}`);
 if (hidUsage("Q") !== 0x070014) throw new Error(`Q ${hidUsage("Q").toString(16)}`);
@@ -173,6 +173,33 @@ if (isEmptyStudioCell({ behaviorId: 7, param1: 0x070014, param2: 0 }) !== false)
 if (isPlaceholderBinding("&kp 0") !== true) throw new Error("kp 0 placeholder");
 if (isPlaceholderBinding("&kp N0") !== true) throw new Error("kp N0 placeholder");
 if (isPlaceholderBinding("&kp Q") !== false) throw new Error("kp Q not placeholder");
+if (!isVacantBinding("&none") || !isVacantBinding("&kp 0") || isVacantBinding("&kp F")) {
+  throw new Error("vacant binding");
+}
+if (preferFileBindingIfVacant("&none", "&kp F") !== "&kp F") throw new Error("file fills empty studio cell");
+if (preferFileBindingIfVacant("&kp HASH", "&kp F") !== "&kp HASH") throw new Error("decoded cell wins");
+if (hidToken(0x070009) !== "F" || hidToken(9) !== "F") throw new Error("hidToken F");
+if (layerNameKey("BASE") !== "BASE" || layerNameKey("base_layer") !== "BASE") throw new Error("layer name key");
+const fileLayers = [
+  { id: "base_layer", bindings: [{ text: "&kp Q" }, { text: "&kp W" }, { text: "&kp F" }, { text: "&kp P" }] },
+  { id: "code_layer", bindings: [{ text: "&kp GRAVE" }, { text: "&kp AT" }, { text: "&kp HASH" }] },
+];
+if (fileBindingAt(fileLayers, "BASE", 2) !== "&kp F") throw new Error("fileBindingAt BASE/P2");
+if (fileBindingAt(fileLayers, "code_layer", 2) !== "&kp HASH") throw new Error("fileBindingAt code/P2");
+const editorHoles = [
+  {
+    id: "base_layer",
+    bindings: [{ text: "&kp Q" }, { text: "&kp W" }, { text: "&none" }, { text: "&kp P" }],
+  },
+];
+if (fillVacantBindingsFromFile(editorHoles, [{ id: "BASE", bindings: fileLayers[0].bindings }]) !== 1) {
+  throw new Error("fill should replace one hole");
+}
+if (editorHoles[0].bindings[2].text !== "&kp F") throw new Error("name-matched fill writes F");
+const skipped = [{ id: "base_layer", bindings: [{ text: "&none" }, { text: "&none" }, { text: "&none" }] }];
+fillVacantBindingsFromFile(skipped, fileLayers, (_layer, _li, _binding, i) => i === 2);
+if (skipped[0].bindings[2].text !== "&none") throw new Error("skip keeps overlay hole");
+if (skipped[0].bindings[0].text !== "&kp Q") throw new Error("unskipped hole fills");
 const emptyKp = cellsToBinding({ behaviorId: 7, param1: 0, param2: 0 }, behaviors, layers);
 if (emptyKp.ok) throw new Error("zero keypress should not replace a file key");
 const hidNoMeta = [
@@ -219,6 +246,42 @@ if (parsedReadback.behaviorId !== 7 || parsedReadback.rawBehaviorId !== zigzag32
   throw new Error(`sint32 readback ${JSON.stringify(parsedReadback)}`);
 }
 
+const physicalKey = concatBytes([
+  encodeSint32(1, 100),
+  encodeSint32(2, 100),
+  encodeSint32(3, -25),
+  encodeSint32(4, 75),
+  encodeSint32(5, -10),
+  encodeSint32(6, 50),
+  encodeSint32(7, 60),
+]);
+const physicalResponse = parseResponse(
+  encodeSub(
+    1,
+    concatBytes([
+      encodeUint32(1, 9),
+      encodeSub(
+        5,
+        encodeSub(
+          6,
+          concatBytes([
+            encodeUint32(1, 0),
+            encodeSub(2, concatBytes([encodeString(1, "Generic 40"), encodeSub(2, physicalKey)])),
+          ])
+        )
+      ),
+    ])
+  )
+);
+const parsedPhysical = physicalResponse.physicalLayouts.layouts[0];
+if (parsedPhysical.name !== "Generic 40") throw new Error(`physical layout name ${JSON.stringify(parsedPhysical)}`);
+if (
+  JSON.stringify(parsedPhysical.keys[0]) !==
+  JSON.stringify({ w: 100, h: 100, x: -25, y: 75, r: -10, rx: 50, ry: 60 })
+) {
+  throw new Error(`physical layout key ${JSON.stringify(parsedPhysical.keys[0])}`);
+}
+
 // SetLayerBindingResponse is a plain enum on the wire (varint), not a
 // submessage. A rejected write (INVALID_PARAMETERS) must not read back as
 // success just because the response has no other fields set.
@@ -228,6 +291,25 @@ const rejectedSetResponse = parseResponse(
 if (rejectedSetResponse.setLayerBinding !== 3) {
   throw new Error(`set-layer rejection ${JSON.stringify(rejectedSetResponse)}`);
 }
+
+const resetSettingsResponse = parseResponse(
+  encodeSub(1, concatBytes([encodeUint32(1, 3), encodeSub(3, encodeUint32(4, 1))]))
+);
+if (!resetSettingsResponse.resetSettings) {
+  throw new Error(`keymap reset response ${JSON.stringify(resetSettingsResponse)}`);
+}
+const resetClient = Object.create(StudioClient.prototype);
+resetClient.call = async () => ({ resetSettings: true });
+if (!(await resetClient.resetKeymapSettings())) throw new Error("keymap reset client");
+resetClient.call = async () => ({ resetSettings: false });
+await resetClient.resetKeymapSettings().then(
+  () => {
+    throw new Error("failed keymap reset must reject");
+  },
+  (error) => {
+    if (!/compiled Studio keymap/.test(error.message)) throw error;
+  }
+);
 
 // The wire value can collide with another local behavior ID. The decoded
 // logical ID must still win; otherwise a mouse binding can read back as hmr.
@@ -285,6 +367,26 @@ const btBack = cellsToBinding(
   layers
 );
 if (!btBack.ok || btBack.text !== "&bt BT_SEL 0") throw new Error(`bt after apply ${JSON.stringify(btBack)}`);
+for (const [command, value] of [
+  ["BT_CLR", 0],
+  ["BT_NXT", 1],
+  ["BT_PRV", 2],
+  ["BT_CLR_ALL", 4],
+  ["BT_DISC", 5],
+]) {
+  const decoded = cellsToBinding(
+    { behaviorId: 11, rawBehaviorId: zigzag32(11), param1: value, param2: 0 },
+    afterApply,
+    layers
+  );
+  if (!decoded.ok || decoded.text !== `&bt ${command}`) {
+    throw new Error(`bt ${command} must not decode as a mouse button ${JSON.stringify(decoded)}`);
+  }
+  const encoded = bindingToCells(`&bt ${command}`, afterApply, layers);
+  if (!encoded.ok || encoded.binding.behaviorId !== 11 || encoded.binding.param1 !== value) {
+    throw new Error(`bt ${command} roundtrip ${JSON.stringify(encoded)}`);
+  }
+}
 if (resolveLayerId("CODE", [{ id: 1, name: "code_layer" }]) !== 1) throw new Error("CODE from code_layer");
 if (resolveLayerId("NAV", [{ id: 2, name: "" }, { id: 2, name: "nav_layer" }]) !== 2) throw new Error("NAV");
 const kpWithNil = cellsToBinding({ behaviorId: 4, rawBehaviorId: 4, param1: 0x070019, param2: 0 }, mixed, layers);

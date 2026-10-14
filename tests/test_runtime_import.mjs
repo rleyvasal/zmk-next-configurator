@@ -59,7 +59,7 @@ if (!importedKinds.includes("macro:mac_lock") || !importedKinds.includes("macro:
   throw new Error(`totem imported ${importedKinds}`);
 }
 if (!totem.imported.some((item) => item.kind === "combo" && item.id === "combo_reset_left")) {
-  throw new Error(`missing all-layer reset combo ${JSON.stringify(totem.imported)}`);
+  throw new Error(`missing base-layer reset combo ${JSON.stringify(totem.imported)}`);
 }
 const skippedIds = totem.skipped.map((item) => item.id);
 if (!skippedIds.includes("hml") || !skippedIds.includes("hmr")) {
@@ -68,6 +68,10 @@ if (!skippedIds.includes("hml") || !skippedIds.includes("hmr")) {
 const escCombo = totem.draft.combos.find((combo) => combo.keyPositions.join(",") === "0,1");
 if (!escCombo || escCombo.layerMask !== 1) {
   throw new Error(`layered combo_esc should import on BASE only ${JSON.stringify(escCombo)}`);
+}
+const resetCombo = totem.draft.combos.find((combo) => combo.keyPositions.join(",") === "20,21");
+if (!resetCombo || resetCombo.layerMask !== 1) {
+  throw new Error(`combo_reset_left should import on BASE only ${JSON.stringify(resetCombo)}`);
 }
 if (!totem.skipped.some((item) => item.id === "combo_studio_unlock" && /ifdef/.test(item.reason))) {
   throw new Error("guarded studio combo must be skipped");
@@ -256,6 +260,49 @@ if (!lockObjectId || !lock.draft.runtimeObjects.some((item) => item.id === lockO
   throw new Error(`lock combo output must be the imported macro ${JSON.stringify(lockCombo)}`);
 }
 if (lockCombo.keyPositions.join(",") !== "2,3") throw new Error(`lock positions ${lockCombo.keyPositions}`);
+
+const editedLock = importKeymapRuntimeObjects({
+  snapshot: lock.draft,
+  capabilities,
+  macros: [
+    {
+      id: "mac_lgui_lctrl_q",
+      runtimeObjectId: lockObjectId,
+      steps: [
+        { kind: "press", keys: "&kp LGUI" },
+        { kind: "press", keys: "&kp LCTRL" },
+        { kind: "tap", keys: "&kp W" },
+        { kind: "release", keys: "&kp LCTRL" },
+        { kind: "release", keys: "&kp LGUI" },
+      ],
+    },
+  ],
+  combos: [
+    {
+      id: "combo_mac_lgui_lctrl_q",
+      runtimeComboId: lockCombo.id,
+      positions: [4, 5],
+      binding: "&kp LGUI",
+      layers: "all",
+      timeout: 60,
+    },
+  ],
+  ...encode,
+});
+if (editedLock.draft.runtimeObjects.length !== lock.draft.runtimeObjects.length) {
+  throw new Error("editing a live macro must update its remembered object instead of leaking a new one");
+}
+if (editedLock.draft.combos.length !== lock.draft.combos.length) {
+  throw new Error("editing a live combo must update its remembered combo instead of leaking a new one");
+}
+const editedObject = editedLock.draft.runtimeObjects.find((item) => item.id === lockObjectId);
+const editedCombo = editedLock.draft.combos.find((item) => item.id === lockCombo.id);
+if (!editedObject?.steps.some((step) => step.action?.compiledBehavior?.param1 === 0x07001a)) {
+  throw new Error(`remembered macro was not updated ${JSON.stringify(editedObject)}`);
+}
+if (editedCombo?.keyPositions.join(",") !== "4,5" || editedCombo.timeoutMs !== 60) {
+  throw new Error(`remembered combo was not updated ${JSON.stringify(editedCombo)}`);
+}
 
 const summary = formatRuntimeImportSummary(totem);
 if (!summary.includes("mac_lock") || !summary.includes("Skipped:") || !summary.includes("until Apply")) {

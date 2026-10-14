@@ -128,7 +128,13 @@ export function runtimeObjectAction(objectId) {
   return { runtimeObjectId: u32(objectId, "runtime object ID") };
 }
 
-function normalizeAction(action, { allowRuntimeObject = true } = {}) {
+// A combo-output-only directive: suppress the devicetree-compiled combo at
+// this combo's key positions instead of firing a behavior.
+export function suppressCompiledAction() {
+  return { suppressCompiled: true };
+}
+
+function normalizeAction(action, { allowRuntimeObject = true, allowSuppressCompiled = false } = {}) {
   if (!action || typeof action !== "object") throw new Error("action is required");
   if (action.compiledBehavior) {
     const compiled = action.compiledBehavior;
@@ -142,7 +148,11 @@ function normalizeAction(action, { allowRuntimeObject = true } = {}) {
     if (!objectId) throw new Error("runtime object ID must be nonzero");
     return runtimeObjectAction(objectId);
   }
-  throw new Error("action must be compiledBehavior or runtimeObjectId");
+  if (action.suppressCompiled) {
+    if (!allowSuppressCompiled) throw new Error("suppress-compiled actions are not supported here");
+    return suppressCompiledAction();
+  }
+  throw new Error("action must be compiledBehavior, runtimeObjectId, or suppressCompiled");
 }
 
 function encodeAction(action, options) {
@@ -158,6 +168,9 @@ function encodeAction(action, options) {
       ])
     );
   }
+  if (normalized.suppressCompiled) {
+    return encodeBool(F.ActionReference.suppress_compiled, true);
+  }
   return encodeUint32(F.ActionReference.runtime_object_id, normalized.runtimeObjectId);
 }
 
@@ -170,6 +183,7 @@ function decodeAction(fields) {
       fieldU32(compiled, F.CompiledBehaviorAction.param2)
     );
   }
+  if (fieldNums(fields, F.ActionReference.suppress_compiled)[0]) return suppressCompiledAction();
   const ids = fieldNums(fields, F.ActionReference.runtime_object_id);
   if (ids.length) return runtimeObjectAction(ids[0]);
   throw new Error("runtime action has no target");
@@ -354,7 +368,7 @@ function encodeCombo(combo) {
       positions.map((position) => u32(position, "combo position"))
     ),
     encodeUint32(F.ComboDefinition.timeout_ms, u32(combo.timeoutMs, "combo timeout")),
-    encodeSub(F.ComboDefinition.output, encodeAction(combo.output)),
+    encodeSub(F.ComboDefinition.output, encodeAction(combo.output, { allowSuppressCompiled: true })),
     encodeBool(F.ComboDefinition.slow_release, !!combo.slowRelease),
     encodeUint32(F.ComboDefinition.require_prior_idle_ms, u32(combo.requirePriorIdleMs ?? 0, "combo prior idle")),
     encodeUint32(F.ComboDefinition.layer_mask, u32(combo.layerMask ?? 0, "combo layer mask")),
