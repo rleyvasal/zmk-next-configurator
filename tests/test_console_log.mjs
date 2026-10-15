@@ -6,7 +6,7 @@ import {
   parseDumpEnd,
   parseStreamHello,
 } from "../src/connection/console-log.js";
-import { frameBytes, deframeAll } from "../src/connection/studio.js";
+import { frameBytes, deframeAll, isBatteryFrame } from "../src/connection/studio.js";
 
 const cases = [
   ["totem_ble bg_evict addr=AA idx=2 disc_reason=0x13 thrash_win=4", "evict"],
@@ -101,3 +101,10 @@ for (const [line, kind, gloss] of diagCases) {
 }
 const end = parseDumpEnd("zmk_diag dump end saved=20 unsaved=1");
 if (!end || end.saved !== 20 || end.unsaved !== 1) throw new Error("dump end");
+
+// Battery frames: 'K' from zmk-studio-log builds, 'B' from older Totem firmware.
+for (const prefix of [0x4b, 0x42]) {
+  const bat = deframeAll(frameBytes(Uint8Array.from([prefix, ...new TextEncoder().encode("left=80 right=75")])));
+  if (!isBatteryFrame(bat.frames[0])) throw new Error(`battery prefix 0x${prefix.toString(16)}`);
+}
+if (isBatteryFrame(Uint8Array.from([0x4c, 0x41]))) throw new Error("log frame is not battery");

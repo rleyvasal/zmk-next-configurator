@@ -44,7 +44,15 @@ const SOF = 0xab;
 const ESC = 0xac;
 const EOF = 0xad;
 const LOG_PREFIX = 0x4c; // 'L' — printk muxed onto the Studio CDC
-const BAT_PREFIX = 0x42; // 'B' — battery snapshot, independent of Enable log
+// Battery snapshot, independent of Enable log. 'K' since the move to zmk-studio-log, whose
+// raw frames need a prefix that can never start a protobuf message; older Totem firmware
+// still sends 'B'.
+const BAT_PREFIXES = new Set([0x4b, 0x42]);
+
+/** True for a battery snapshot frame from either firmware generation. */
+export function isBatteryFrame(frame) {
+  return frame.length > 0 && BAT_PREFIXES.has(frame[0]);
+}
 const CTL_PREFIX = 0x43; // 'C' — USB log on/off (host → device)
 const DIAG_DUMP_PREFIX = 0x44; // 'D' — request retained diagnostic journal
 
@@ -321,7 +329,7 @@ export class StudioClient {
             if (line) this.onLog?.(line);
             continue;
           }
-          if (frame.length && frame[0] === BAT_PREFIX) {
+          if (isBatteryFrame(frame)) {
             const line = decoder.decode(frame.slice(1));
             if (line) this.onBattery?.(line);
             continue;
