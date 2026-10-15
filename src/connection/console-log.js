@@ -19,7 +19,19 @@ export function parseStreamHello(line) {
     const v = new RegExp(`\\b${key}=(\\d+)`).exec(line);
     return v ? Number(v[1]) : null;
   };
-  return { version: Number(m[1]), history: num("history"), lineMax: num("line_max") };
+  return {
+    version: Number(m[1]),
+    history: num("history"),
+    lineMax: num("line_max"),
+    retained: num("retained") === 1,
+    blackBox: num("blackbox") === 1,
+  };
+}
+
+/** "zmk_diag dump end saved=12 unsaved=3" closes a black box dump. */
+export function parseDumpEnd(line) {
+  const m = /^zmk_diag dump end saved=(\d+) unsaved=(\d+)/.exec(line || "");
+  return m ? { saved: Number(m[1]), unsaved: Number(m[2]) } : null;
 }
 
 /** Totem firmware tags its own diagnostics; other keyboards never do. */
@@ -31,6 +43,14 @@ export function classifyLogLine(line) {
   const level = ZEPHYR_LOG.exec(line);
   if (level) return level[1] === "err" ? "fail" : level[1] === "wrn" ? "evict" : "";
   if (/^zmk_studio_log /.test(line)) return "boot";
+  if (/^zmk_diag /.test(line)) {
+    if (/ crash |reset=\S*(watchdog|brownout|cpu_lockup)| fault reason=/.test(line)) return "fail";
+    const cause = /reset_cause=0x([0-9a-fA-F]+)/.exec(line);
+    if (cause && parseInt(cause[1], 16) & (0x4 | 0x10 | 0x100)) return "fail";
+    if (/ ble_disconnect | ble_connect_failed | dropped=/.test(line)) return "evict";
+    if (/^zmk_diag (boot|fault none|dump)| boot reset_cause=/.test(line)) return "boot";
+    return "";
+  }
   if (/CLASS_A|security_fail|connect_fail|bg_evict_fail|totem_fault CRASH/.test(line)) return "fail";
   if (/bg_evict|thrash_win|skip_evict/.test(line)) return "evict";
   if (/security_ok|watch done|watch arm/.test(line)) return "ok";
@@ -47,8 +67,62 @@ const REASON = {
   "0x16": "connection terminated",
 };
 
+// Why a keyboard restarted, from the reset causes the zmk-studio-log module prints.
+const RESET_CAUSE = {
+  power_on: "power applied (cable, switch or battery)",
+  reset_pin: "reset button or bootloader double-tap",
+  software: "firmware rebooted itself (crash, bootloader or settings reset)",
+  watchdog: "watchdog: the firmware hung",
+  brownout: "brownout: supply voltage dropped (battery or cable)",
+  cpu_lockup: "CPU lockup: a fault inside the fault handler",
+  wake_from_sleep: "woke from deep sleep",
+  debug: "debugger",
+};
+
+// HCI disconnect reasons as seen from the keyboard (Bluetooth Core spec, vol 1 part F).
+const DISCONNECT_REASON = {
+  "0x05": "pairing/authentication failed",
+  "0x08": "signal lost (supervision timeout)",
+  "0x13": "the other device disconnected",
+  "0x16": "the keyboard disconnected",
+  "0x22": "link layer timeout",
+  "0x3d": "encryption failed (MIC)",
+  "0x3e": "connection failed to establish",
+};
+
+// Zephyr hwinfo reset cause bits, as stored in the black box's boot events.
+const RESET_BITS = [
+  "reset_pin", "software", "brownout", "power_on", "watchdog", "debug", "security",
+  "wake_from_sleep", "cpu_lockup", "parity", "pll", "clock", "hardware", "user", "temperature",
+];
+
+function resetCausesFromBits(value) {
+  const names = RESET_BITS.filter((_, bit) => value & (1 << bit));
+  return names.length ? names : ["power_on"];
+}
+
+function glossDiagLine(line) {
+  const bits = [];
+  const reset = /reset=(\S+)/.exec(line);
+  const resetBits = /reset_cause=0x([0-9a-fA-F]+)/.exec(line);
+  const causes = reset ? reset[1].split(",") : resetBits ? resetCausesFromBits(parseInt(resetBits[1], 16)) : [];
+  for (const cause of causes) bits.push(RESET_CAUSE[cause] || cause);
+  if (/ crash | fault reason=/.test(line)) {
+    bits.push("crash: run arm-zephyr-eabi-addr2line -e zmk.elf <pc> on the matching build");
+  }
+  if (/^zmk_diag fault none/.test(line)) bits.push("no crash recorded before this boot");
+  const reason = /\breason=(0x[0-9a-fA-F]{2})\b/.exec(line);
+  if (reason && DISCONNECT_REASON[reason[1].toLowerCase()]) {
+    bits.push(DISCONNECT_REASON[reason[1].toLowerCase()]);
+  }
+  if (/\bprofile=-1\b/.test(line)) bits.push("not a paired computer (likely the split half)");
+  if (/ unsaved#/.test(line)) bits.push("not yet in flash");
+  return bits.join("; ");
+}
+
 export function glossLogLine(line) {
-  // The glosses decode Totem's key=value diagnostics; don't guess at other firmware's lines.
+  if (/^zmk_diag /.test(line)) return glossDiagLine(line);
+  // The glosses below decode Totem's key=value diagnostics; don't guess at other firmware's lines.
   if (ZEPHYR_LOG.test(line) || /^zmk_studio_log /.test(line)) return "";
   const bits = [];
   if (/\bidx=-19\b/.test(line) || /\bsplit=--/.test(line) || /\bsplit=-?\d{2}/.test(line)) {

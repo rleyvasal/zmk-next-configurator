@@ -81,7 +81,13 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
-import { appendLogLine, isTotemLogLine, parseBatteryLine, parseStreamHello } from "../connection/console-log.js";
+import {
+  appendLogLine,
+  isTotemLogLine,
+  parseBatteryLine,
+  parseDumpEnd,
+  parseStreamHello,
+} from "../connection/console-log.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -220,6 +226,7 @@ const state = {
   loadedBindings: new Map(),
   kbConsole: null,
   kbLogTotem: false,
+  kbLogBlackBox: false,
   kbLogHeard: false,
   kbLogSilenceTimer: null,
 };
@@ -5331,10 +5338,14 @@ function setKbLogStatus(text) {
   if (el) el.textContent = text;
 }
 
-// The retained diagnostic journal and the legend's key=value glossary only exist on Totem
-// firmware; other keyboards stream plain lines through the zmk-studio-log module.
+// The legend's key=value glossary only applies to Totem firmware. The retained log exists on
+// Totem firmware and on firmware whose zmk-studio-log module has the black box enabled.
 function kbLogIsTotem() {
   return state.kbLogTotem || currentProfileId() === "totem";
+}
+
+function kbLogHasRetained() {
+  return kbLogIsTotem() || state.kbLogBlackBox;
 }
 
 function showKbLogButtons({ enable = false, disable = false, retained = false, clear = false } = {}) {
@@ -5345,7 +5356,7 @@ function showKbLogButtons({ enable = false, disable = false, retained = false, c
   const legend = document.querySelector("#kb-log .kb-log-legend");
   if (onBtn) onBtn.hidden = !enable;
   if (offBtn) offBtn.hidden = !disable;
-  if (retainedBtn) retainedBtn.hidden = !(retained && kbLogIsTotem());
+  if (retainedBtn) retainedBtn.hidden = !(retained && kbLogHasRetained());
   if (clearBtn) clearBtn.hidden = !clear;
   if (legend) legend.hidden = !kbLogIsTotem();
 }
@@ -5373,12 +5384,25 @@ async function attachKeyboardLog(client) {
   }
   state.kbLogOn = false;
   state.kbLogTotem = false;
+  state.kbLogBlackBox = false;
   clearTimeout(state.kbLogSilenceTimer);
   client.onLog = (line) => {
     state.kbLogHeard = true;
     const hello = parseStreamHello(line);
-    if (hello && state.kbLogOn) {
-      setKbLogStatus(`USB log on (zmk-studio-log v${hello.version}). Disable if typing gets jumpy.`);
+    if (hello) {
+      if (state.kbLogOn) {
+        setKbLogStatus(`USB log on (zmk-studio-log v${hello.version}). Disable if typing gets jumpy.`);
+      }
+      if (hello.blackBox && !state.kbLogBlackBox) {
+        state.kbLogBlackBox = true;
+        showKbLogButtons({ enable: !state.kbLogOn, disable: state.kbLogOn, retained: true, clear: true });
+      }
+    }
+    const dumpEnd = parseDumpEnd(line);
+    if (dumpEnd) {
+      setKbLogStatus(
+        `Retained log loaded: ${dumpEnd.saved} saved event(s), ${dumpEnd.unsaved} not yet in flash. Live log follows.`,
+      );
     }
     if (!state.kbLogTotem && isTotemLogLine(line)) {
       state.kbLogTotem = true;

@@ -3,6 +3,7 @@ import {
   glossLogLine,
   isTotemLogLine,
   parseBatteryLine,
+  parseDumpEnd,
   parseStreamHello,
 } from "../src/connection/console-log.js";
 import { frameBytes, deframeAll } from "../src/connection/studio.js";
@@ -80,3 +81,23 @@ if (glossLogLine("[00:00:01.234,000] <inf> ble: role=0 level=2") !== "") {
 if (!isTotemLogLine("totem_ble rssi none") || isTotemLogLine("[00:00:01.000,000] <inf> totem_x: y")) {
   throw new Error("isTotemLogLine");
 }
+
+// zmk-studio-log restart diagnostics and black box
+const full = parseStreamHello("zmk_studio_log v1 history=32 line_max=120 retained=1 blackbox=1");
+if (!full.retained || !full.blackBox) throw new Error(`hello flags ${JSON.stringify(full)}`);
+if (hello.blackBox) throw new Error("hello without flags must not claim a black box");
+const diagCases = [
+  ["zmk_diag boot #3 reset=watchdog cause=0x00000010", "fail", "hung"],
+  ["zmk_diag boot #1 reset=power_on cause=0x00000000", "boot", "power applied"],
+  ["zmk_diag fault reason=0(cpu_exception) pc=0x00012345 lr=0x00012001 thread=x(0x1) at=5ms", "fail", "addr2line"],
+  ["zmk_diag #4 boot=2 t=0.010s boot reset_cause=0x00000004", "fail", "brownout"],
+  ["zmk_diag #4 boot=2 t=0.010s boot reset_cause=0x00000002", "boot", "rebooted itself"],
+  ["zmk_diag #12 boot=2 t=301.120s ble_disconnect profile=0 reason=0x08 addr=..a1b2c3", "evict", "signal lost"],
+  ["zmk_diag unsaved#1 boot=3 t=12.000s battery=81%", "", "not yet in flash"],
+];
+for (const [line, kind, gloss] of diagCases) {
+  if (classifyLogLine(line) !== kind) throw new Error(`${line} => ${classifyLogLine(line)}, want ${kind}`);
+  if (!glossLogLine(line).includes(gloss)) throw new Error(`${line} gloss ${glossLogLine(line)}`);
+}
+const end = parseDumpEnd("zmk_diag dump end saved=20 unsaved=1");
+if (!end || end.saved !== 20 || end.unsaved !== 1) throw new Error("dump end");
