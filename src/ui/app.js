@@ -81,7 +81,7 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
-import { appendLogLine, parseBatteryLine } from "../connection/console-log.js";
+import { appendLogLine, isTotemLogLine, parseBatteryLine, parseStreamHello } from "../connection/console-log.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -219,6 +219,9 @@ const state = {
   runtimeDirtyKeys: new Map(),
   loadedBindings: new Map(),
   kbConsole: null,
+  kbLogTotem: false,
+  kbLogHeard: false,
+  kbLogSilenceTimer: null,
 };
 
 // Debug hook - inspect live state.studio.layers / state.layers from devtools
@@ -5328,15 +5331,38 @@ function setKbLogStatus(text) {
   if (el) el.textContent = text;
 }
 
+// The retained diagnostic journal and the legend's key=value glossary only exist on Totem
+// firmware; other keyboards stream plain lines through the zmk-studio-log module.
+function kbLogIsTotem() {
+  return state.kbLogTotem || currentProfileId() === "totem";
+}
+
 function showKbLogButtons({ enable = false, disable = false, retained = false, clear = false } = {}) {
   const onBtn = $("kb-log-on");
   const offBtn = $("kb-log-off");
   const retainedBtn = $("kb-log-retained");
   const clearBtn = $("kb-log-clear");
+  const legend = document.querySelector("#kb-log .kb-log-legend");
   if (onBtn) onBtn.hidden = !enable;
   if (offBtn) offBtn.hidden = !disable;
-  if (retainedBtn) retainedBtn.hidden = !retained;
+  if (retainedBtn) retainedBtn.hidden = !(retained && kbLogIsTotem());
   if (clearBtn) clearBtn.hidden = !clear;
+  if (legend) legend.hidden = !kbLogIsTotem();
+}
+
+// Firmware without a log stream ignores "Enable log", so say so instead of showing an empty panel.
+const KB_LOG_SILENT_MS = 4000;
+
+function watchKbLogSilence() {
+  clearTimeout(state.kbLogSilenceTimer);
+  state.kbLogHeard = false;
+  state.kbLogSilenceTimer = setTimeout(() => {
+    if (!state.kbLogOn || state.kbLogHeard) return;
+    setKbLogStatus(
+      "No log from the keyboard yet. Its firmware needs the zmk-studio-log module, " +
+        "and Studio must be connected over USB.",
+    );
+  }, KB_LOG_SILENT_MS);
 }
 
 async function attachKeyboardLog(client) {
@@ -5346,7 +5372,18 @@ async function attachKeyboardLog(client) {
     state.kbConsole = null;
   }
   state.kbLogOn = false;
+  state.kbLogTotem = false;
+  clearTimeout(state.kbLogSilenceTimer);
   client.onLog = (line) => {
+    state.kbLogHeard = true;
+    const hello = parseStreamHello(line);
+    if (hello && state.kbLogOn) {
+      setKbLogStatus(`USB log on (zmk-studio-log v${hello.version}). Disable if typing gets jumpy.`);
+    }
+    if (!state.kbLogTotem && isTotemLogLine(line)) {
+      state.kbLogTotem = true;
+      showKbLogButtons({ enable: !state.kbLogOn, disable: state.kbLogOn, retained: true, clear: true });
+    }
     appendLogLine(lines, line);
     if (/totem_batt /.test(line)) setKbBattery(line);
   };
@@ -7338,6 +7375,7 @@ function boot() {
       client.setUsbLog(true).then(() => {
         state.kbLogOn = true;
         setKbLogStatus("USB log on. Disable if typing gets jumpy.");
+        watchKbLogSilence();
         showKbLogButtons({ enable: false, disable: true, retained: true, clear: true });
         setKbLogLive(true);
         setKbLogOpen(true);
@@ -7348,6 +7386,7 @@ function boot() {
       if (!client?.setUsbLog) return;
       client.setUsbLog(false).then(() => {
         state.kbLogOn = false;
+        clearTimeout(state.kbLogSilenceTimer);
         setKbLogStatus("USB log off. Remap still works.");
         showKbLogButtons({ enable: true, disable: false, retained: true, clear: true });
         setKbLogLive(false);

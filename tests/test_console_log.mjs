@@ -1,4 +1,10 @@
-import { classifyLogLine, glossLogLine, parseBatteryLine } from "../src/connection/console-log.js";
+import {
+  classifyLogLine,
+  glossLogLine,
+  isTotemLogLine,
+  parseBatteryLine,
+  parseStreamHello,
+} from "../src/connection/console-log.js";
 import { frameBytes, deframeAll } from "../src/connection/studio.js";
 
 const cases = [
@@ -8,6 +14,10 @@ const cases = [
   ["totem_ble watch step=1 mode=light densify profile=0", "watch"],
   ["totem_prof 0* AA:BB:CC:DD:EE:FF", "boot"],
   ["hello", ""],
+  ["[00:00:01.234,000] <err> zmk: Failed to send", "fail"],
+  ["[00:00:01.234,000] <wrn> zmk_studio: Decode failed", "evict"],
+  ["[00:00:01.234,000] <inf> zmk: Welcome to ZMK!", ""],
+  ["zmk_studio_log v1 history=32 line_max=120", "boot"],
 ];
 for (const [line, want] of cases) {
   const got = classifyLogLine(line);
@@ -56,3 +66,17 @@ if (batFrames.frames.length !== 1 || batFrames.frames[0][0] !== 0x42) {
 }
 
 console.log("test_console_log ok");
+
+// zmk-studio-log module (any keyboard)
+const hello = parseStreamHello("zmk_studio_log v1 history=32 line_max=120");
+if (!hello || hello.version !== 1 || hello.history !== 32 || hello.lineMax !== 120) {
+  throw new Error(`hello ${JSON.stringify(hello)}`);
+}
+if (parseStreamHello("zmk_studio_log off") !== null) throw new Error("off is not a hello");
+if (parseStreamHello("totem_log t=1s usb=1") !== null) throw new Error("totem line is not a hello");
+if (glossLogLine("[00:00:01.234,000] <inf> ble: role=0 level=2") !== "") {
+  throw new Error("Zephyr log lines must not get Totem glosses");
+}
+if (!isTotemLogLine("totem_ble rssi none") || isTotemLogLine("[00:00:01.000,000] <inf> totem_x: y")) {
+  throw new Error("isTotemLogLine");
+}

@@ -1,11 +1,36 @@
 /**
- * Live printk tail from the keyboard's second USB CDC (board console).
- * Studio RPC stays on the other port; this one is plain text.
+ * Keyboard log lines: either 'L' frames on the Studio connection (the
+ * zmk-studio-log module, or Totem firmware) or a plain-text board console.
  */
 
 const MAX_LINES = 400;
 
+// Zephyr log backend output: "[00:00:01.234,000] <wrn> module: message".
+const ZEPHYR_LOG = /^\[[\d:.,]+\] <(err|wrn|inf|dbg)> /;
+
+/**
+ * The zmk-studio-log module answers "Enable log" with
+ * "zmk_studio_log v1 history=32 line_max=120" before anything else.
+ */
+export function parseStreamHello(line) {
+  const m = /^zmk_studio_log v(\d+)\b/.exec(line || "");
+  if (!m) return null;
+  const num = (key) => {
+    const v = new RegExp(`\\b${key}=(\\d+)`).exec(line);
+    return v ? Number(v[1]) : null;
+  };
+  return { version: Number(m[1]), history: num("history"), lineMax: num("line_max") };
+}
+
+/** Totem firmware tags its own diagnostics; other keyboards never do. */
+export function isTotemLogLine(line) {
+  return /^totem_/.test(line || "");
+}
+
 export function classifyLogLine(line) {
+  const level = ZEPHYR_LOG.exec(line);
+  if (level) return level[1] === "err" ? "fail" : level[1] === "wrn" ? "evict" : "";
+  if (/^zmk_studio_log /.test(line)) return "boot";
   if (/CLASS_A|security_fail|connect_fail|bg_evict_fail|totem_fault CRASH/.test(line)) return "fail";
   if (/bg_evict|thrash_win|skip_evict/.test(line)) return "evict";
   if (/security_ok|watch done|watch arm/.test(line)) return "ok";
@@ -23,6 +48,8 @@ const REASON = {
 };
 
 export function glossLogLine(line) {
+  // The glosses decode Totem's key=value diagnostics; don't guess at other firmware's lines.
+  if (ZEPHYR_LOG.test(line) || /^zmk_studio_log /.test(line)) return "";
   const bits = [];
   if (/\bidx=-19\b/.test(line) || /\bsplit=--/.test(line) || /\bsplit=-?\d{2}/.test(line)) {
     bits.push("split right half");
