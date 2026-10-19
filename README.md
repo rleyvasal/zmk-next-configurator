@@ -2,7 +2,7 @@
 
 Visual ZMK keymap editor. Geometry comes from a **layout profile**. Works with **any** ZMK keyboard (Corne, Glove80, …). Totem is the first built-in profile, not a hard dependency.
 
-Firmware for Connect / Runtime Config / live log: pin `rleyvasal/zmk-next` and the host-policy module as in [totem-zmk-config/STACK.md](https://github.com/rleyvasal/totem-zmk-config/blob/zmk-next-logs-batt/STACK.md). Stock ZMK Studio firmware can still **Connect** and change existing bindings only.
+Firmware for Connect and Runtime Config: point your config at `rleyvasal/zmk-next` as in its [quick start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md). For the keyboard log panel and battery chips, also add the [zmk-studio-log](https://github.com/rleyvasal/zmk-studio-log) module. Stock ZMK Studio firmware can still **Connect** and change existing bindings only.
 
 ```
 zmk-next-configurator/

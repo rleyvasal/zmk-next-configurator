@@ -7711,7 +7711,7 @@ function boot() {
         setStatus(err.message);
       }
     });
-    const serialHint = "Web Serial. Pick Totem Home. Close zmk.studio first.";
+    const serialHint = "Web Serial. Pick your keyboard's serial port. Close zmk.studio first.";
     if ($("load-keyboard")) $("load-keyboard").title = serialHint;
     if (!("serial" in navigator)) {
       if ($("load-keyboard")) $("load-keyboard").disabled = true;

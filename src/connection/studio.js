@@ -369,7 +369,7 @@ export class StudioClient {
         reject(
           new Error(
             timeoutMessage ||
-              "Studio RPC timed out. Pick Totem Home. Close zmk.studio / Helium first."
+              "Studio RPC timed out. Pick your keyboard's serial port. Close zmk.studio / Helium first."
           )
         );
       }, timeoutMs);
