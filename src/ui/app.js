@@ -81,6 +81,13 @@ import {
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
 import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
+import {
+  appendLogLine,
+  isTotemLogLine,
+  parseBatteryLine,
+  parseDumpEnd,
+  parseStreamHello,
+} from "../connection/console-log.js";
 import { bindingToCells, cellsToBinding, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile } from "../connection/studio-bind.js";
 import { HOLD_TAP_FLAVOR, RuntimeValidationError, encodeRuntimeSnapshot } from "../connection/runtime-config.js";
 import {
@@ -217,6 +224,11 @@ const state = {
   compiledFileLayers: [],
   runtimeDirtyKeys: new Map(),
   loadedBindings: new Map(),
+  kbConsole: null,
+  kbLogTotem: false,
+  kbLogBlackBox: false,
+  kbLogHeard: false,
+  kbLogSilenceTimer: null,
 };
 
 // Debug hook - inspect live state.studio.layers / state.layers from devtools
@@ -468,6 +480,50 @@ function setStudioLabel(text, kind = "") {
     banner.className = `runtime-banner ${kind}`.trim();
     conn.textContent = text;
   }
+  if (!state.studio) setKbBattery(null);
+}
+
+function setKbBattery(line) {
+  const wrap = $("kb-batt");
+  const leftEl = $("kb-batt-left");
+  const rightEl = $("kb-batt-right");
+  if (!wrap || !leftEl || !rightEl) return;
+  const parsed = parseBatteryLine(line);
+  if (!parsed) {
+    wrap.hidden = true;
+    leftEl.textContent = "L —";
+    rightEl.textContent = "R —";
+    leftEl.className = "kb-batt-chip";
+    rightEl.className = "kb-batt-chip";
+    return;
+  }
+  wrap.hidden = false;
+  if (parsed.leftUsb && parsed.left != null) {
+    leftEl.textContent = `L ${parsed.left}%`;
+    leftEl.className = parsed.left <= 15 ? "kb-batt-chip usb low" : "kb-batt-chip usb";
+    leftEl.title = "Last left-cell reading before USB. Charge voltage is not SoC.";
+  } else if (parsed.leftUsb) {
+    leftEl.textContent = "L USB";
+    leftEl.className = "kb-batt-chip usb";
+    leftEl.title = "Left is on USB. Unplug once so we can remember a cell reading.";
+  } else if (parsed.left == null) {
+    leftEl.textContent = "L —";
+    leftEl.className = "kb-batt-chip";
+    leftEl.title = "";
+  } else {
+    leftEl.textContent = `L ${parsed.left}%`;
+    leftEl.className = parsed.left <= 15 ? "kb-batt-chip low" : "kb-batt-chip";
+    leftEl.title = "Left half cell";
+  }
+  if (parsed.right == null) {
+    rightEl.textContent = "R —";
+    rightEl.className = "kb-batt-chip";
+    rightEl.title = "Right half has not reported yet";
+  } else {
+    rightEl.textContent = `R ${parsed.right}%`;
+    rightEl.className = parsed.right <= 15 ? "kb-batt-chip low" : "kb-batt-chip";
+    rightEl.title = "Right half cell";
+  }
 }
 
 function updateStudioButtons() {
@@ -475,9 +531,7 @@ function updateStudioButtons() {
   $("studio-apply").disabled = !on || !state.configLoaded;
   const hint = $("live-hint");
   if (hint) {
-    hint.innerHTML = state.runtime
-      ? "<strong>Combinations</strong> still use trigger keys on the layout and an output from the palette. Advanced is for mod-morphs, tap-dances, and extra timing. Apply saves one snapshot; it activates when the keyboard is idle."
-      : "<strong>Live Apply</strong> works for existing bindings only. New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.";
+    hint.innerHTML = "<strong>Live Apply</strong> saves changes to your keyboard. Flash is needed for custom bindings and pointer move/scroll.";
   }
 }
 
@@ -1049,9 +1103,7 @@ function keycodeList() {
 }
 
 function renderLegend() {
-  const el = $("color-legend");
-  if (!el) return;
-  el.classList.toggle("compact", state.selected.size > 0);
+  // The legend is intentionally stable: selection never hides key types.
 }
 
 function renderInspect(force = false) {
@@ -1885,20 +1937,15 @@ function renderKeyboard() {
       const dotR = 5.5;
       const dotCx = k.x + dotR + 3;
       const dotCy = k.y + dotR + 3;
-      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      ring.setAttribute("class", "override-dot-ring");
-      ring.setAttribute("cx", dotCx);
-      ring.setAttribute("cy", dotCy);
-      ring.setAttribute("r", String(dotR + 2));
       const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       dot.setAttribute("class", "override-dot");
       dot.setAttribute("cx", dotCx);
       dot.setAttribute("cy", dotCy);
       dot.setAttribute("r", String(dotR));
-      g.append(ring, dot);
+      g.append(dot);
     }
 
-    if (edits.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
+    if (edits.has(i) && !overrides.has(i) && !state.comboDraft && !state.behaviorDraft && !state.macroDraft) {
       const dotR = 5.5;
       const dotCx = k.x + k.w - dotR - 3;
       const dotCy = k.y + k.h - dotR - 3;
@@ -5257,6 +5304,119 @@ async function probeRuntimeConfig(client) {
 // returning; `silent` (used for the on-load auto-connect attempt, where
 // "no keyboard plugged in yet" is a normal outcome, not an error) skips that
 // reporting and the "Connecting…" label entirely.
+const KB_LOG_OPEN_KEY = "keymap-kb-log-open";
+
+function kbLogIsOpen() {
+  try {
+    return localStorage.getItem(KB_LOG_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setKbLogOpen(open) {
+  const section = $("kb-log");
+  const body = $("kb-log-body");
+  const toggle = $("kb-log-toggle");
+  if (section) section.classList.toggle("collapsed", !open);
+  if (body) body.hidden = !open;
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  try {
+    localStorage.setItem(KB_LOG_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function setKbLogLive(on) {
+  const el = $("kb-log-live");
+  if (el) el.hidden = !on;
+}
+
+function setKbLogStatus(text) {
+  const el = $("kb-log-status");
+  if (el) el.textContent = text;
+}
+
+// The legend's key=value glossary only applies to Totem firmware. The retained log exists on
+// Totem firmware and on firmware whose zmk-studio-log module has the black box enabled.
+function kbLogIsTotem() {
+  return state.kbLogTotem || currentProfileId() === "totem";
+}
+
+function kbLogHasRetained() {
+  return kbLogIsTotem() || state.kbLogBlackBox;
+}
+
+function showKbLogButtons({ enable = false, disable = false, retained = false, clear = false } = {}) {
+  const onBtn = $("kb-log-on");
+  const offBtn = $("kb-log-off");
+  const retainedBtn = $("kb-log-retained");
+  const clearBtn = $("kb-log-clear");
+  const legend = document.querySelector("#kb-log .kb-log-legend");
+  if (onBtn) onBtn.hidden = !enable;
+  if (offBtn) offBtn.hidden = !disable;
+  if (retainedBtn) retainedBtn.hidden = !(retained && kbLogHasRetained());
+  if (clearBtn) clearBtn.hidden = !clear;
+  if (legend) legend.hidden = !kbLogIsTotem();
+}
+
+// Firmware without a log stream ignores "Enable log", so say so instead of showing an empty panel.
+const KB_LOG_SILENT_MS = 4000;
+
+function watchKbLogSilence() {
+  clearTimeout(state.kbLogSilenceTimer);
+  state.kbLogHeard = false;
+  state.kbLogSilenceTimer = setTimeout(() => {
+    if (!state.kbLogOn || state.kbLogHeard) return;
+    setKbLogStatus(
+      "No log from the keyboard yet. Its firmware needs the zmk-studio-log module, " +
+        "and Studio must be connected over USB.",
+    );
+  }, KB_LOG_SILENT_MS);
+}
+
+async function attachKeyboardLog(client) {
+  const lines = $("kb-log-lines");
+  if (state.kbConsole) {
+    await state.kbConsole.close();
+    state.kbConsole = null;
+  }
+  state.kbLogOn = false;
+  state.kbLogTotem = false;
+  state.kbLogBlackBox = false;
+  clearTimeout(state.kbLogSilenceTimer);
+  client.onLog = (line) => {
+    state.kbLogHeard = true;
+    const hello = parseStreamHello(line);
+    if (hello) {
+      if (state.kbLogOn) {
+        setKbLogStatus(`USB log on (zmk-studio-log v${hello.version}). Disable if typing gets jumpy.`);
+      }
+      if (hello.blackBox && !state.kbLogBlackBox) {
+        state.kbLogBlackBox = true;
+        showKbLogButtons({ enable: !state.kbLogOn, disable: state.kbLogOn, retained: true, clear: true });
+      }
+    }
+    const dumpEnd = parseDumpEnd(line);
+    if (dumpEnd) {
+      setKbLogStatus(
+        `Retained log loaded: ${dumpEnd.saved} saved event(s), ${dumpEnd.unsaved} not yet in flash. Live log follows.`,
+      );
+    }
+    if (!state.kbLogTotem && isTotemLogLine(line)) {
+      state.kbLogTotem = true;
+      showKbLogButtons({ enable: !state.kbLogOn, disable: state.kbLogOn, retained: true, clear: true });
+    }
+    appendLogLine(lines, line);
+    if (/totem_batt /.test(line)) setKbBattery(line);
+  };
+  client.onBattery = (line) => setKbBattery(line);
+  setKbLogStatus("USB log off. Enable to stream printk. Remap still works.");
+  showKbLogButtons({ enable: true, disable: false, retained: true, clear: true });
+  setKbLogLive(false);
+}
+
 async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
   if (!silent) setStudioLabel("Connecting…");
   try {
@@ -5267,6 +5427,7 @@ async function establishStudioConnection({ connector = connectStudio, silent = f
     rememberStockBindings(client);
     state.runtimeDirtyKeys = new Map();
     state.runtime = await probeRuntimeConfig(client);
+    await attachKeyboardLog(client);
     const deviceLabel = $("runtime-banner-device");
     if (deviceLabel) deviceLabel.textContent = client.deviceName || state.profile?.name || "Keyboard";
     setStudioLabel(state.runtime ? "Connected · Running Configuration ready" : "Connected", "on");
@@ -5704,6 +5865,20 @@ async function restoreRuntimeStock() {
 }
 
 async function restoreRuntimeStockNow() {
+  setRestoreProgress(true);
+  try {
+    return await restoreRuntimeStockNowImpl();
+  } finally {
+    setRestoreProgress(false);
+  }
+}
+
+function setRestoreProgress(active) {
+  const overlay = $("restore-progress");
+  if (overlay) overlay.hidden = !active;
+}
+
+async function restoreRuntimeStockNowImpl() {
   setStatus("Saving stock Running Configuration generation…");
   const expectedActiveGeneration =
     state.runtime.status?.activeGeneration ?? state.runtime.snapshot?.generation ?? 0;
@@ -5887,8 +6062,11 @@ function renderRuntimeBanner() {
   const debug = $("runtime-banner-debug");
   if (!label || !summary || !restore || !debug) return;
   const on = !!state.runtime;
+  const counts = runtimeOverlayCounts(state.runtime?.snapshot || {});
+  const hasOverwrittenKeys = counts.keyOverrides || counts.comboKeys;
   label.hidden = !on;
-  summary.textContent = on ? `· ${runtimeOverlaySummary()}` : "";
+  summary.textContent = on ? runtimeOverlaySummary() : "";
+  summary.classList.toggle("overwritten", Boolean(on && hasOverwrittenKeys));
   restore.hidden = !on;
   restore.disabled = !state.studio;
   debug.hidden = !on;
@@ -7207,6 +7385,48 @@ function boot() {
     $("load-keyboard")?.addEventListener("click", () => {
       connectToKeyboard().catch((err) => setStatus(err.message));
     });
+    setKbLogOpen(kbLogIsOpen());
+    $("kb-log-toggle")?.addEventListener("click", () => {
+      setKbLogOpen(!kbLogIsOpen());
+    });
+    $("kb-log-clear")?.addEventListener("click", () => {
+      const lines = $("kb-log-lines");
+      if (lines) lines.replaceChildren();
+    });
+    $("kb-log-on")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.setUsbLog) return;
+      client.setUsbLog(true).then(() => {
+        state.kbLogOn = true;
+        setKbLogStatus("USB log on. Disable if typing gets jumpy.");
+        watchKbLogSilence();
+        showKbLogButtons({ enable: false, disable: true, retained: true, clear: true });
+        setKbLogLive(true);
+        setKbLogOpen(true);
+      }).catch((err) => setStatus(err.message));
+    });
+    $("kb-log-off")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.setUsbLog) return;
+      client.setUsbLog(false).then(() => {
+        state.kbLogOn = false;
+        clearTimeout(state.kbLogSilenceTimer);
+        setKbLogStatus("USB log off. Remap still works.");
+        showKbLogButtons({ enable: true, disable: false, retained: true, clear: true });
+        setKbLogLive(false);
+      }).catch((err) => setStatus(err.message));
+    });
+    $("kb-log-retained")?.addEventListener("click", () => {
+      const client = state.studio;
+      if (!client?.requestDiagnosticDump) return;
+      client.requestDiagnosticDump().then(() => {
+        state.kbLogOn = true;
+        setKbLogStatus("Loading retained diagnostic log…");
+        showKbLogButtons({ enable: false, disable: true, retained: true, clear: true });
+        setKbLogLive(true);
+        setKbLogOpen(true);
+      }).catch((err) => setStatus(err.message));
+    });
     $("load-github")?.addEventListener("click", () => {
       loadFromGitHub().catch((err) => setStatus(err.message));
     });
@@ -7491,7 +7711,7 @@ function boot() {
         setStatus(err.message);
       }
     });
-    const serialHint = "Web Serial. Pick the silent ZMK Studio RPC port, not printk. Close zmk.studio first.";
+    const serialHint = "Web Serial. Pick your keyboard's serial port. Close zmk.studio first.";
     if ($("load-keyboard")) $("load-keyboard").title = serialHint;
     if (!("serial" in navigator)) {
       if ($("load-keyboard")) $("load-keyboard").disabled = true;

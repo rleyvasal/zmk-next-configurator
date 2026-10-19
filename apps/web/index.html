@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="darkreader-lock" />
     <title>ZMK Next Configurator</title>
-    <link rel="stylesheet" href="../../src/ui/editor.css?v=80" />
+    <link rel="stylesheet" href="../../src/ui/editor.css?v=85" />
   </head>
   <body>
     <div id="theme-notice" class="theme-notice" hidden>
@@ -63,6 +63,10 @@
         <span class="dot" aria-hidden="true"></span>
         <span id="runtime-banner-conn" class="runtime-banner-conn">Not connected</span>
         <span id="runtime-banner-device" class="runtime-banner-summary"></span>
+        <div id="kb-batt" class="kb-batt" hidden title="Right is live over the split. Left while USB is the last cell reading, remembered from before the cable went in.">
+          <span class="kb-batt-chip" id="kb-batt-left">L —</span>
+          <span class="kb-batt-chip" id="kb-batt-right">R —</span>
+        </div>
         <span class="runtime-banner-sep" aria-hidden="true"></span>
         <span id="runtime-banner-label" class="runtime-banner-label" hidden>Running Configuration</span>
         <span id="runtime-banner-summary" class="runtime-banner-summary"></span>
@@ -76,22 +80,37 @@
           <h3>Keyboard</h3>
           <select id="layout-profile" aria-label="Layout profile"></select>
         </section>
+        <section class="side-block kb-log collapsed" id="kb-log">
+          <button type="button" id="kb-log-toggle" class="kb-log-toggle" aria-expanded="false" aria-controls="kb-log-body">
+            <h3>Keyboard log</h3>
+            <span id="kb-log-live" class="kb-log-live" hidden>live</span>
+            <span class="kb-log-chevron" aria-hidden="true"></span>
+          </button>
+          <div id="kb-log-body" class="kb-log-body" hidden>
+            <div class="kb-log-status" id="kb-log-status">Connect over USB. Log is off until you enable it. Off on Bluetooth.</div>
+            <p class="kb-log-legend">idx=-19 split · 0x08 timeout · 0x13 we kicked a host · active_up=0 selected computer down · level=4 Mac LE Secure Connections · level=2 split Just Works · hid=usb/ble · rssi more negative = weaker (−40 to −80 typical)</p>
+            <pre id="kb-log-lines" class="kb-log-lines" aria-live="polite"></pre>
+            <div class="kb-log-actions">
+              <button type="button" id="kb-log-on" class="kb-log-btn" hidden>Enable log</button>
+              <button type="button" id="kb-log-off" class="kb-log-btn" hidden>Disable log</button>
+              <button type="button" id="kb-log-retained" class="kb-log-btn" hidden>Load retained log</button>
+              <button type="button" id="kb-log-clear" class="kb-log-btn" hidden>Clear</button>
+            </div>
+          </div>
+        </section>
         <div class="inspect" id="inspect">
           <div>Click a key to inspect its behavior.</div>
         </div>
         <p id="live-hint" class="flash-hint">
-        <strong>Live Apply</strong> works for existing bindings only.
-          New macros, combos, layers, behaviors, and core mouse move/scroll bindings require Download → flash.
+          <strong>Live Apply</strong> saves changes to your keyboard. Flash is needed for custom bindings and pointer move/scroll.
         </p>
         <div id="color-legend" class="color-legend" aria-label="Key colors">
           <span><i class="lg-sel"></i>Selected</span>
           <span><i class="lg-hold"></i>Hold-tap</span>
-          <span><i class="lg-layer"></i>Layer</span>
+          <span><i class="lg-layer"></i>Layer key</span>
           <span><i class="lg-macro"></i>Macro</span>
           <span><i class="lg-combo"></i>Combo</span>
           <span><i class="lg-other"></i>Other</span>
-          <span class="lg-extra"><i class="lg-open"></i>Opens layer</span>
-          <span class="lg-extra"><i class="lg-prot"></i>Recovery</span>
         </div>
       </aside>
       <section class="board">
@@ -669,11 +688,17 @@
         </div>
       </div>
     </div>
+    <div id="restore-progress" class="restore-progress-overlay" role="status" aria-live="polite" aria-label="Restoring Stock Configuration" hidden>
+      <div class="restore-progress-panel">
+        <span class="restore-progress-spinner" aria-hidden="true"></span>
+        <span>Restoring Stock Configuration</span>
+      </div>
+    </div>
     <div class="status" id="status">Load a keymap to begin.</div>
     <script type="module">
       import { applyTheme } from "../../src/ui/theme.js?v=73";
       applyTheme();
-      import("../../src/ui/app.js?v=82").catch((err) => {
+      import("../../src/ui/app.js?v=91").catch((err) => {
         const el = document.getElementById("status");
         if (el) el.textContent = `Editor failed to start: ${err.message}`;
         console.error(err);

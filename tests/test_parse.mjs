@@ -135,7 +135,7 @@ if (studioLayerId({ name: "base" }, 0) !== "base_layer") throw new Error(studioL
 if (studioLayerId({ name: "NAV" }, 2, "nav_layer") !== "nav_layer") throw new Error("studio nav");
 if (studioLayerId({ name: "" }, 3, "mod_layer") !== "mod_layer") throw new Error("keep previous id");
 
-if (bindingLabel("&mmv MOVE_UP") !== "↑") throw new Error("mouse label");
+if (bindingLabel("&mmv MOVE_UP") !== "Mouse ↑") throw new Error("mouse label");
 if (bindingLabel("&kp LC(LS(DOWN))") !== "⌃⇧↓") throw new Error(`chord ${bindingLabel("&kp LC(LS(DOWN))")}`);
 if (formatKeyLabel("&kp A").font !== 28) throw new Error("short font");
 if (formatKeyLabel("&kp LC(LS(DOWN))").lines.join("").length > 6) throw new Error("chord should stay short");

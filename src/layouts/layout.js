@@ -104,8 +104,11 @@ export function layoutBounds(keys, pad = 40) {
   };
 }
 
-/** Built-in layout profiles shipped with the editor. */
-export const PROFILE_INDEX = [{ id: "totem", name: "Totem", url: "../../layouts/totem.json" }];
+/** Built-in layout profiles shipped with the editor. Drop another JSON in layouts/ and add a row. */
+export const PROFILE_INDEX = [
+  { id: "totem", name: "Totem", url: "../../layouts/totem.json" },
+  { id: "example-split", name: "Example split", url: "../../layouts/example-split.json" },
+];
 
 export function normalizeProfile(raw) {
   if (!raw || typeof raw !== "object") throw new Error("Invalid layout profile.");

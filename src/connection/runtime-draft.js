@@ -357,7 +357,7 @@ export function actionFromBindingText(text, { behaviors, studioLayers, allowRunt
     }
     return runtimeObjectAction(objectId);
   }
-  const binding = bindingToCells(text, behaviors, studioLayers);
+  const binding = bindingToCells(text, behaviors, studioLayers, { allowMouseAxisWithoutMetadata: true });
   if (!binding.ok) throw new RuntimeDraftError(binding.reason || "Cannot encode binding");
   if (!binding.name || binding.name === RUNTIME_BINDING) {
     throw new RuntimeDraftError("compiled runtime-object bindings are not valid ActionRefs");

@@ -43,6 +43,18 @@ const Fr = FIELDS.runtime_config;
 const SOF = 0xab;
 const ESC = 0xac;
 const EOF = 0xad;
+const LOG_PREFIX = 0x4c; // 'L' — printk muxed onto the Studio CDC
+// Battery snapshot, independent of Enable log. 'K' since the move to zmk-studio-log, whose
+// raw frames need a prefix that can never start a protobuf message; older Totem firmware
+// still sends 'B'.
+const BAT_PREFIXES = new Set([0x4b, 0x42]);
+
+/** True for a battery snapshot frame from either firmware generation. */
+export function isBatteryFrame(frame) {
+  return frame.length > 0 && BAT_PREFIXES.has(frame[0]);
+}
+const CTL_PREFIX = 0x43; // 'C' — USB log on/off (host → device)
+const DIAG_DUMP_PREFIX = 0x44; // 'D' — request retained diagnostic journal
 
 export function frameBytes(payload) {
   const out = [SOF];
@@ -283,8 +295,10 @@ function parseResponse(bytes) {
 }
 
 export class StudioClient {
-  constructor(port) {
+  constructor(port, { onLog, onBattery } = {}) {
     this.port = port;
+    this.onLog = onLog;
+    this.onBattery = onBattery;
     this.nextId = 1;
     this.pending = new Map();
     this.frameState = { mode: "idle", buf: [] };
@@ -301,6 +315,7 @@ export class StudioClient {
   }
 
   async readLoop() {
+    const decoder = new TextDecoder();
     try {
       while (!this.closed) {
         const { value, done } = await this.reader.read();
@@ -309,6 +324,16 @@ export class StudioClient {
         const { frames, state } = deframeAll(value, this.frameState);
         this.frameState = state;
         for (const frame of frames) {
+          if (frame.length && frame[0] === LOG_PREFIX) {
+            const line = decoder.decode(frame.slice(1));
+            if (line) this.onLog?.(line);
+            continue;
+          }
+          if (isBatteryFrame(frame)) {
+            const line = decoder.decode(frame.slice(1));
+            if (line) this.onBattery?.(line);
+            continue;
+          }
           let parsed;
           try {
             parsed = parseResponse(frame);
@@ -344,7 +369,7 @@ export class StudioClient {
         reject(
           new Error(
             timeoutMessage ||
-              "Studio RPC timed out. Pick the silent RPC port (often cu.usbmodem104), not the printk console (101). Close zmk.studio / Helium first."
+              "Studio RPC timed out. Pick your keyboard's serial port. Close zmk.studio / Helium first."
           )
         );
       }, timeoutMs);
@@ -376,6 +401,15 @@ export class StudioClient {
     }
     if (resp.noResponse) throw new Error("Studio sent no_response");
     return resp;
+  }
+
+  async setUsbLog(on) {
+    const payload = Uint8Array.from([CTL_PREFIX, on ? 0x31 : 0x30]);
+    await this.writer.write(frameBytes(payload));
+  }
+
+  async requestDiagnosticDump() {
+    await this.writer.write(frameBytes(Uint8Array.from([DIAG_DUMP_PREFIX, 0x31])));
   }
 
   async handshake() {

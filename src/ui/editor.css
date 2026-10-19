@@ -13,7 +13,7 @@
   --accent-ink: #082f49;
   --select: #22d3ee;
   --select-fill: #155e75;
-  --override: #a78bfa;
+  --override: #ff746c;
   --danger: #fbbf24;
   --danger-bg: #422006;
   --danger-ink: #fde68a;
@@ -442,6 +442,114 @@ button:disabled {
   font-weight: 700;
 }
 
+.session > .kb-log {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kb-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.kb-log-toggle h3 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.kb-log-live {
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ok);
+}
+
+.kb-log-chevron {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+.kb-log.collapsed .kb-log-chevron {
+  transform: rotate(-45deg);
+}
+
+.kb-log-body[hidden] {
+  display: none;
+}
+
+.kb-log-status {
+  color: var(--muted);
+  font-size: 0.68rem;
+  margin: 0 0 0.3rem;
+}
+
+.kb-log-legend {
+  color: var(--muted);
+  font-size: 0.62rem;
+  margin: 0 0 0.3rem;
+  line-height: 1.3;
+}
+
+.kb-log-lines .gloss {
+  color: var(--muted);
+  font-size: 0.58rem;
+}
+
+.kb-log-lines {
+  flex: 1 1 auto;
+  min-height: 4.5rem;
+  max-height: 11rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.62rem;
+  line-height: 1.35;
+  font-family: var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kb-log-lines .fail { color: var(--danger); }
+.kb-log-lines .evict { color: #fbbf24; }
+.kb-log-lines .ok { color: var(--ok); }
+.kb-log-lines .watch { color: var(--accent); }
+.kb-log-lines .boot { color: var(--muted); }
+
+.kb-log-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.kb-log-btn {
+  padding: 0.18rem 0.45rem;
+  font-size: 0.68rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 #layout-profile {
   width: 100%;
   padding: 0.3rem 0.4rem;
@@ -521,6 +629,52 @@ button:disabled {
 .runtime-banner-summary {
   color: var(--ink);
   font-weight: 600;
+}
+
+.runtime-banner-summary.overwritten {
+  color: var(--override);
+}
+
+.runtime-banner-summary.overwritten::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--override);
+  vertical-align: 0.05em;
+}
+
+.kb-batt {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.kb-batt[hidden] {
+  display: none;
+}
+
+.kb-batt-chip {
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.kb-batt-chip.usb {
+  color: var(--muted);
+}
+
+.kb-batt-chip.low {
+  color: var(--danger);
 }
 
 .runtime-banner-restore {
@@ -615,17 +769,6 @@ main.workspace {
   gap: 0.22rem 0.4rem;
   font-size: 0.68rem;
   line-height: 1.2;
-}
-
-.session > .color-legend.compact {
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0.12rem 0.28rem;
-  padding-top: 0.3rem;
-  font-size: 0.6rem;
-}
-
-.session > .color-legend.compact .lg-extra {
-  display: none;
 }
 
 .session.live {
@@ -1701,7 +1844,7 @@ button.danger {
 
 .color-legend .lg-sel {
   background: var(--select-fill);
-  border: 1.5px solid var(--select);
+  border: 1.5px dashed var(--select);
 }
 
 .color-legend .lg-hold {
@@ -1721,22 +1864,12 @@ button.danger {
 
 .color-legend .lg-combo {
   background: var(--combo-fill);
-  border: 1.5px dashed var(--combo-color);
+  border: 1.5px solid var(--combo-color);
 }
 
 .color-legend .lg-other {
   background: var(--other-fill);
   border: 1.5px solid var(--other);
-}
-
-.color-legend .lg-open {
-  background: var(--layerhold-fill);
-  border: 1.5px solid var(--layerhold);
-}
-
-.color-legend .lg-prot {
-  background: var(--bg-key);
-  border: 1.5px dashed var(--danger);
 }
 
 .layers {
@@ -2116,11 +2249,6 @@ body.hide-combo-pairs .combo-pair-badge-label {
   display: none;
 }
 
-.override-dot-ring {
-  fill: var(--bg-raise);
-  pointer-events: none;
-}
-
 .override-dot {
   fill: var(--override);
   pointer-events: none;
@@ -2136,9 +2264,51 @@ body.hide-combo-pairs .combo-pair-badge-label {
   pointer-events: none;
 }
 
-body.hide-colors .override-dot-ring,
 body.hide-colors .override-dot {
   display: none;
+}
+
+.restore-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+
+.restore-progress-overlay[hidden] {
+  display: none;
+}
+
+.restore-progress-panel {
+  display: grid;
+  justify-items: center;
+  gap: 0.8rem;
+  padding: 1.5rem 1.8rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-raise);
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 0 16px 40px color-mix(in srgb, #000 45%, transparent);
+}
+
+.restore-progress-spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 0.22rem solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: restore-progress-spin 0.9s linear infinite;
+}
+
+@keyframes restore-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .restore-progress-spinner { animation: none; }
 }
 
 body.hide-colors .key-hit.kind-macro,

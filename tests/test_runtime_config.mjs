@@ -175,6 +175,16 @@ const mouseBehaviors = [
   { id: 40, displayName: "Move Mouse", param1: [], param2: [] },
   { id: 41, displayName: "Mouse Scroll", param1: [], param2: [] },
 ];
+const mouseAction = actionFromBindingText("&mmv MOVE_LEFT", {
+  behaviors: mouseBehaviors,
+  studioLayers: draftStudioLayers,
+});
+if (
+  mouseAction.compiledBehavior?.behaviorId !== 40 ||
+  mouseAction.compiledBehavior?.param1 !== 0xfda80000
+) {
+  throw new Error(`mouse action encoding ${JSON.stringify(mouseAction)}`);
+}
 const mouseDraft = replaceDraftKeymapOverrides({
   snapshot,
   capabilities: { ...draftCapabilities, limits: { maxKeymapOverrides: 6 } },
@@ -183,11 +193,17 @@ const mouseDraft = replaceDraftKeymapOverrides({
   behaviors: mouseBehaviors,
   studioLayers: draftStudioLayers,
 });
-if (mouseDraft.keymapOverrides.length !== 1 || mouseDraft.keymapOverrides[0].keyPosition !== 2) {
-  throw new Error(`mouse-axis keys must stay compiled ${JSON.stringify(mouseDraft.keymapOverrides)}`);
+if (
+  mouseDraft.keymapOverrides.length !== 3 ||
+  mouseDraft.keymapOverrides[1].action.compiledBehavior.behaviorId !== 41 ||
+  mouseDraft.keymapOverrides[1].action.compiledBehavior.param1 !== 10 ||
+  mouseDraft.keymapOverrides[2].action.compiledBehavior.behaviorId !== 40 ||
+  mouseDraft.keymapOverrides[2].action.compiledBehavior.param1 !== 0xfda80000
+) {
+  throw new Error(`mouse-axis keys must be runtime overrides ${JSON.stringify(mouseDraft.keymapOverrides)}`);
 }
-if ((mouseDraft.skippedBindings || []).length !== 2) {
-  throw new Error(`mouse skips ${JSON.stringify(mouseDraft.skippedBindings)}`);
+if ((mouseDraft.skippedBindings || []).length !== 0) {
+  throw new Error(`mouse runtime encoding should not skip ${JSON.stringify(mouseDraft.skippedBindings)}`);
 }
 const customDraft = replaceDraftKeymapOverrides({
   snapshot,
@@ -356,6 +372,7 @@ const editorCaps = {
   },
 };
 const encodeOpts = { behaviors: draftBehaviors, studioLayers: draftStudioLayers };
+const mouseEncodeOpts = { behaviors: mouseBehaviors, studioLayers: draftStudioLayers };
 
 if (parseRuntimeObjectId("&rt 13") !== 13 || !isRuntimeObjectBinding("&rt 13")) {
   throw new Error("parse runtime binding");
@@ -436,6 +453,23 @@ const comboDraft = upsertRuntimeCombo(
 if (comboDraft.combos.at(-1).keyPositions.join(",") !== "2,1") {
   throw new Error(`combo stock map ${JSON.stringify(comboDraft.combos.at(-1))}`);
 }
+const mouseComboDraft = upsertRuntimeCombo(
+  snapshot,
+  {
+    id: 40,
+    selectedPositions: [0, 2],
+    timeoutMs: 50,
+    outputBinding: "&msc SCRL_UP",
+  },
+  editorCaps,
+  mouseEncodeOpts
+);
+if (
+  mouseComboDraft.combos.at(-1).output.compiledBehavior?.behaviorId !== 41 ||
+  mouseComboDraft.combos.at(-1).output.compiledBehavior?.param1 !== 10
+) {
+  throw new Error(`mouse combo output ${JSON.stringify(mouseComboDraft.combos.at(-1))}`);
+}
 const packedCombo = decodeRuntimeSnapshot(
   encodeRuntimeSnapshot({
     ...snapshot,
@@ -476,6 +510,23 @@ try {
   unbalanced = error instanceof RuntimeDraftError && /balance/.test(error.message);
 }
 if (!unbalanced) throw new Error("unbalanced macro must be rejected");
+
+const mouseMacro = upsertRuntimeObject(
+  snapshot,
+  {
+    id: 51,
+    type: "macro",
+    steps: [{ type: "tap", binding: "&mmv MOVE_RIGHT" }],
+  },
+  editorCaps,
+  mouseEncodeOpts
+);
+if (
+  mouseMacro.runtimeObjects.at(-1).steps[0].action.compiledBehavior?.behaviorId !== 40 ||
+  mouseMacro.runtimeObjects.at(-1).steps[0].action.compiledBehavior?.param1 !== 0x02580000
+) {
+  throw new Error(`mouse macro step ${JSON.stringify(mouseMacro.runtimeObjects.at(-1))}`);
+}
 
 let nestedMacro = false;
 try {
