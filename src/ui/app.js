@@ -80,7 +80,7 @@ import {
   ReorderLayerCommand,
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
-import { connectStudio, connectKnownStudioPort } from "../connection/studio.js";
+import { connectStudio, connectKnownStudioPort, UNLOCK_PROMPT } from "../connection/studio.js";
 import {
   appendLogLine,
   isTotemLogLine,
@@ -5420,7 +5420,14 @@ async function attachKeyboardLog(client) {
 async function establishStudioConnection({ connector = connectStudio, silent = false } = {}) {
   if (!silent) setStudioLabel("Connecting…");
   try {
-    const client = await connector();
+    // A silent auto-connect doesn't wait for the unlock key; Connect does.
+    const onLocked = silent
+      ? undefined
+      : () => {
+          setStudioLabel("Locked: press unlock key", "err");
+          setStatus(UNLOCK_PROMPT);
+        };
+    const client = await connector({ onLocked });
     if (!client) return null;
     state.studio = client;
     rememberDeviceLayers(client);
