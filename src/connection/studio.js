@@ -294,6 +294,11 @@ function parseResponse(bytes) {
   return out;
 }
 
+const UNLOCK_WAIT_MS = 60000;
+export const LOCKED_MESSAGE =
+  "Studio is locked. Press your keyboard's Studio unlock key (&studio_unlock), then Connect again.";
+export const UNLOCK_PROMPT = "Studio is locked. Press your keyboard's Studio unlock key (&studio_unlock) to continue.";
+
 export class StudioClient {
   constructor(port, { onLog, onBattery } = {}) {
     this.port = port;
@@ -412,7 +417,19 @@ export class StudioClient {
     await this.writer.write(frameBytes(Uint8Array.from([DIAG_DUMP_PREFIX, 0x31])));
   }
 
-  async handshake() {
+  // Asks for the lock state until Studio is unlocked. The keyboard answers
+  // get_lock_state while locked, so this needs no notification handling.
+  async waitForUnlock({ timeoutMs = UNLOCK_WAIT_MS, intervalMs = 500 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
+      if (lock.lockState !== 0) return true;
+    }
+    return false;
+  }
+
+  async handshake({ onLocked } = {}) {
     const info = await this.call(
       (id) => encodeCore(id, Fc.Request.get_device_info),
       1500,
@@ -421,7 +438,9 @@ export class StudioClient {
     this.deviceName = info.deviceInfo?.name || "Keyboard";
     const lock = await this.call((id) => encodeCore(id, Fc.Request.get_lock_state));
     if (lock.lockState === 0) {
-      throw new Error("Studio is locked. This image should be unlocked; try unplugging USB and reconnecting.");
+      if (!onLocked) throw new Error(LOCKED_MESSAGE);
+      onLocked();
+      if (!(await this.waitForUnlock())) throw new Error(`${LOCKED_MESSAGE} Timed out waiting for it.`);
     }
     const listed = await this.call((id) => encodeBehaviors(id, Fb.Request.list_all_behaviors));
     const ids = listed.behaviorIds || [];
@@ -856,7 +875,7 @@ export class StudioClient {
   }
 }
 
-async function openAndHandshake(port) {
+async function openAndHandshake(port, { onLocked } = {}) {
   await port.open({ baudRate: 12500 });
   try {
     if (port.setSignals) {
@@ -867,7 +886,7 @@ async function openAndHandshake(port) {
   }
   const client = new StudioClient(port);
   try {
-    await client.handshake();
+    await client.handshake({ onLocked });
     return client;
   } catch (err) {
     await client.close();
@@ -880,11 +899,11 @@ async function openAndHandshake(port) {
 // handshake, so callers - like an auto-connect on page load - can treat
 // "nothing to connect to yet" as a normal, unremarkable outcome rather than
 // an error.
-export async function connectKnownStudioPort() {
+export async function connectKnownStudioPort({ onLocked } = {}) {
   if (!navigator.serial) return null;
   for (const port of await navigator.serial.getPorts()) {
     try {
-      return await openAndHandshake(port);
+      return await openAndHandshake(port, { onLocked });
     } catch (err) {
       // Not the RPC port, or not reachable right now - keep looking. Logged
       // (not swallowed silently) since a previously-working known port that
@@ -896,7 +915,9 @@ export async function connectKnownStudioPort() {
   return null;
 }
 
-export async function connectStudio() {
+// onLocked is called when the keyboard reports Studio locked; the connection
+// then waits up to a minute for the unlock key instead of failing.
+export async function connectStudio({ onLocked } = {}) {
   if (!navigator.serial) {
     throw new Error("Web Serial is only in Chrome / Edge. Open this editor there.");
   }
@@ -907,11 +928,11 @@ export async function connectStudio() {
   // than one - a debug console, some other future port - picking the wrong
   // one is easy. If any port was already granted access in an earlier
   // session, probe those first and skip the picker entirely on success.
-  const known = await connectKnownStudioPort();
+  const known = await connectKnownStudioPort({ onLocked });
   if (known) return known;
 
   const port = await navigator.serial.requestPort({});
-  return await openAndHandshake(port);
+  return await openAndHandshake(port, { onLocked });
 }
 
 export function encodeSetLayerBindingForTest(requestId, layerId, keyPosition, binding) {

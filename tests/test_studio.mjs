@@ -1,5 +1,5 @@
 import { encodeUint32, encodeSint32, encodeString, zigzag32, unzigzag32, decodeFields, fieldU32, concatBytes, encodeSub } from "../src/connection/pb.js";
-import { frameBytes, deframeAll, parseResponse, StudioClient } from "../src/connection/studio.js";
+import { frameBytes, deframeAll, parseResponse, StudioClient, LOCKED_MESSAGE } from "../src/connection/studio.js";
 import { hidUsage, parseBindingText, bindingToCells, cellsToBinding, hidToken, findBehavior, isEmptyStudioCell, isPlaceholderBinding, isVacantBinding, preferFileBindingIfVacant, fileBindingAt, fillVacantBindingsFromFile, layerNameKey, resolveLayerId, MOUSE_MOVE, MOUSE_SCROLL, MOUSE_BTN, rememberStudioBehaviors } from "../src/connection/studio-bind.js";
 
 if (hidUsage("A") !== 0x070004) throw new Error(`A ${hidUsage("A").toString(16)}`);
@@ -424,5 +424,33 @@ if (dec.frames[0][0] !== 0xab || dec.frames[0][1] !== 0x01) throw new Error("esc
 const sint = encodeSint32(1, 7);
 const sf = decodeFields(sint);
 if (unzigzag32(fieldU32(sf, 1)) !== 7) throw new Error("sint field");
+
+// A locked keyboard: without onLocked the handshake fails with the unlock hint;
+// with it, the handshake waits until get_lock_state reports unlocked.
+function lockedClient(lockStates) {
+  const client = Object.create(StudioClient.prototype);
+  const replies = [{ deviceInfo: { name: "Test" } }, ...lockStates.map((lockState) => ({ lockState })), { behaviorIds: [] }];
+  client.call = async () => replies.shift();
+  client.getKeymap = async () => {
+    client.layers = [{ id: 0 }];
+    return client.layers;
+  };
+  return client;
+}
+await lockedClient([0]).handshake().then(
+  () => {
+    throw new Error("locked handshake without onLocked must reject");
+  },
+  (error) => {
+    if (error.message !== LOCKED_MESSAGE) throw error;
+  }
+);
+let promptedUnlock = 0;
+const unlocking = lockedClient([0, 0, 1]);
+await unlocking.handshake({ onLocked: () => promptedUnlock++ });
+if (promptedUnlock !== 1 || unlocking.deviceName !== "Test") throw new Error("handshake must wait for unlock");
+const stayLocked = Object.create(StudioClient.prototype);
+stayLocked.call = async () => ({ lockState: 0 });
+if (await stayLocked.waitForUnlock({ timeoutMs: 30, intervalMs: 10 })) throw new Error("still locked must time out");
 
 console.log("studio ok");
