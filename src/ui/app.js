@@ -80,7 +80,13 @@ import {
   ReorderLayerCommand,
 } from "../core/history.js";
 import { buildKeymapSvg } from "./svg.js";
-import { connectStudio, connectKnownStudioPort, UNLOCK_PROMPT } from "../connection/studio.js";
+import {
+  connectStudio,
+  connectKnownStudioPort,
+  LOCKED_MESSAGE,
+  UNLOCK_HELP_URL,
+  UNLOCK_PROMPT,
+} from "../connection/studio.js";
 import {
   appendLogLine,
   isTotemLogLine,
@@ -416,6 +422,21 @@ function startRuntimeIdleWatch(expectedGeneration) {
 
 function setStatus(msg) {
   $("status").textContent = msg;
+}
+
+/** Status text followed by a link that opens in a new tab. */
+function setStatusWithLink(msg, linkText, href) {
+  const status = $("status");
+  const link = document.createElement("a");
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = linkText;
+  status.replaceChildren(`${msg} `, link);
+}
+
+function setUnlockStatus(msg) {
+  setStatusWithLink(msg, "No unlock key? How to add one", UNLOCK_HELP_URL);
 }
 
 function fileDiffCount() {
@@ -5425,7 +5446,7 @@ async function establishStudioConnection({ connector = connectStudio, silent = f
       ? undefined
       : () => {
           setStudioLabel("Locked: press unlock key", "err");
-          setStatus(UNLOCK_PROMPT);
+          setUnlockStatus(UNLOCK_PROMPT);
         };
     const client = await connector({ onLocked });
     if (!client) return null;
@@ -5447,6 +5468,9 @@ async function establishStudioConnection({ connector = connectStudio, silent = f
     if (err?.name === "NotFoundError") {
       setStudioLabel("Not connected");
       setStatus("Connect cancelled.");
+    } else if (err?.message?.startsWith(LOCKED_MESSAGE)) {
+      setStudioLabel("Locked", "err");
+      setUnlockStatus(err.message);
     } else {
       setStudioLabel("Connect failed", "err");
       setStatus(err.message);
