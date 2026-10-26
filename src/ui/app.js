@@ -7306,8 +7306,14 @@ function sampleKeymapUrl() {
   return path ? `../../${path}` : null;
 }
 
+// First visit: a generic layout until the keyboard is connected (its own layout replaces it) or
+// one is picked. A picked built-in layout is remembered in "keymap-layout".
+const FIRST_RUN_PROFILE_ID = "example-split";
+const FIRST_RUN_HINT =
+  "Connect your keyboard over USB to load its layout and keymap, or pick a layout and open a .keymap file.";
+
 function currentProfileId() {
-  return $("layout-profile")?.value || localStorage.getItem("keymap-layout") || "totem";
+  return $("layout-profile")?.value || localStorage.getItem("keymap-layout") || FIRST_RUN_PROFILE_ID;
 }
 
 function fillLayoutSelect() {
@@ -7332,14 +7338,14 @@ function fillLayoutSelect() {
 }
 
 
-async function applyProfileId(id) {
+async function applyProfileId(id, { persist = true } = {}) {
   if (state.importedProfile && state.importedProfile.id === id) {
     applyProfileObject(state.importedProfile, { persist: false });
     return;
   }
   const entry = PROFILE_INDEX.find((p) => p.id === id) || PROFILE_INDEX[0];
   const profile = await loadProfile(entry.url);
-  applyProfileObject(profile);
+  applyProfileObject(profile, { persist });
 }
 
 async function ensureLayout() {
@@ -7822,8 +7828,12 @@ function boot() {
     fillLayoutSelect();
     renderPalette();
     renderLegend();
-    applyProfileId(currentProfileId())
+    const firstRun = !localStorage.getItem("keymap-layout");
+    applyProfileId(currentProfileId(), { persist: !firstRun })
       .then(() => loadSample())
+      .then(() => {
+        if (firstRun && !state.studio) setStatus(FIRST_RUN_HINT);
+      })
       .catch((err) => {
         setStatus(`${err.message} Serve from the repo root: python3 apps/web/serve.py`);
       });

@@ -22,9 +22,10 @@ zmk-next-configurator/
 ## Prepare your keyboard
 
 Live editing needs ZMK Next firmware. An existing ZMK config repo needs two
-edits: point the `zmk` project in `config/west.yml` at a ZMK Next release line
-(`v0.2-branch`), and add `snippet: zmk-next` to the USB/central build in
-`build.yaml`. The keymap also needs a `&studio_unlock` key. The
+edits, plus an unlock key in most keymaps: point the `zmk` project in
+`config/west.yml` at a ZMK Next release line (`v0.2-branch`), add
+`snippet: zmk-next` to the USB/central build in `build.yaml`, and add a
+`&studio_unlock` key if the keymap has none (most stock keymaps don't). The
 [ZMK Next quick-start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md)
 has copy-and-paste examples for all three. Any configurator release works with
 firmware of the same major and minor version (v0.2.x with v0.2.x).
@@ -46,6 +47,11 @@ Chromium-based browser for the Web Serial **Connect** feature.
 
 macOS may quarantine an unsigned downloaded script. If double-clicking is
 blocked, Control-click `start.command`, choose **Open**, and confirm once.
+
+On Linux, the browser can open the keyboard's serial port only if your user
+may use serial devices. On most distributions that means the `dialout` group
+(`uucp` on Arch): run `sudo usermod -aG dialout "$USER"`, then log out and back
+in. Until then, **Connect** shows no keyboard or can't open it.
 
 ## Run from source
 
