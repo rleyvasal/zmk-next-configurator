@@ -2,7 +2,7 @@
 
 Visual ZMK keymap editor. Geometry comes from a **layout profile**. Works with **any** ZMK keyboard (Corne, Glove80, …). Totem is the first built-in profile, not a hard dependency.
 
-Firmware for Connect and Runtime Config: point your config at `rleyvasal/zmk-next` as in its [quick start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md). For the keyboard log panel and battery chips, also add the [zmk-studio-log](https://github.com/rleyvasal/zmk-studio-log) module. Stock ZMK Studio firmware can still **Connect** and change existing bindings only.
+Firmware for Connect and Runtime Config: point your config at `rleyvasal/zmk-next` as in its [quick start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md). For the keyboard log panel and battery chips, also add the [zmk-studio-log](https://github.com/rleyvasal/zmk-studio-log) module. Stock ZMK Studio firmware can still **Connect** and change existing bindings only. On macOS, [ZMK Battery](https://github.com/rleyvasal/zmk-next-battery) shows the same battery levels in the menu bar.
 
 ```
 zmk-next-configurator/
@@ -22,11 +22,12 @@ zmk-next-configurator/
 ## Prepare your keyboard
 
 Live editing needs ZMK Next firmware. An existing ZMK config repo needs two
-edits: point the `zmk` project in `config/west.yml` at a ZMK Next release tag,
-and add `snippet: zmk-next` to the USB/central build in `build.yaml`. The
+edits: point the `zmk` project in `config/west.yml` at a ZMK Next release line
+(`v0.2-branch`), and add `snippet: zmk-next` to the USB/central build in
+`build.yaml`. The keymap also needs a `&studio_unlock` key. The
 [ZMK Next quick-start](https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md)
-has copy-and-paste examples. Any configurator release works with firmware of
-the same major and minor version (v0.2.x with v0.2.x).
+has copy-and-paste examples for all three. Any configurator release works with
+firmware of the same major and minor version (v0.2.x with v0.2.x).
 
 ## Download and run
 
