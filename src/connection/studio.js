@@ -298,6 +298,9 @@ const UNLOCK_WAIT_MS = 60000;
 export const LOCKED_MESSAGE =
   "Studio is locked. Press your keyboard's Studio unlock key (&studio_unlock), then Connect again.";
 export const UNLOCK_PROMPT = "Studio is locked. Press your keyboard's Studio unlock key (&studio_unlock) to continue.";
+// Most stock keymaps have no unlock key; the quick start shows a combo that adds one.
+export const UNLOCK_HELP_URL =
+  "https://github.com/rleyvasal/zmk-next/blob/main/docs/quick-start.md#add-a-studio-unlock-key";
 
 export class StudioClient {
   constructor(port, { onLog, onBattery } = {}) {
